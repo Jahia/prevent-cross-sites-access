@@ -7,22 +7,19 @@
     <parent>
         <artifactId>jahia-modules</artifactId>
         <groupId>org.jahia.modules</groupId>
-        <version>8.1.7.1</version>
+        <version>8.1.0.0</version>
     </parent>
     <groupId>org.jahia.community.modules</groupId>
     <artifactId>prevent-cross-sites-access</artifactId>
     <name>Prevent Cross Sites Access</name>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>bundle</packaging>
-    <description>This is the custom module (sample) for running on a Jahia server.</description>
-
-    <properties>
-        <require-capability>osgi.extender;filter:="(osgi.extender=org.jahia.bundles.blueprint.extender.config)"</require-capability>
-    </properties>
+    <description>This is the custom module (prevent-cross-sites-access) for running on a Jahia server.</description>
 
     <scm>
-        <connection>scm:dummy:uri</connection>
-        <developerConnection>scm:dummy:uri</developerConnection>
+        <connection>scm:git:git@github.com:Jahia/prevent-cross-sites-access</connection>
+        <developerConnection>scm:git:git@github.com:Jahia/prevent-cross-sites-access</developerConnection>
+        <tag>HEAD</tag>
     </scm>
 
     <repositories>
@@ -39,6 +36,17 @@
             </snapshots>
         </repository>
     </repositories>
+
+    <distributionManagement>
+        <repository>
+            <id>ps-releases</id>
+            <url>https://devtools.jahia.com/nexus/content/repositories/jahia-professional-services-public-repository</url>
+        </repository>
+        <snapshotRepository>
+            <id>ps-snapshots</id>
+            <url>https://devtools.jahia.com/nexus/content/repositories/jahia-professional-services-private-repository</url>
+        </snapshotRepository>
+    </distributionManagement>
 
     <build>
         <plugins>

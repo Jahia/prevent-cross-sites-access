@@ -1,11 +1,15 @@
+# Eclipse
 /.classpath
 /.project
 /.settings
+
+# Intellij
 .idea
 *.iml
 *.ipr
+
+# Maven
 target
-/pom.xml.releaseBackup
-/pom.xml.tag
-/release.properties
-/pom.xml.next
+
+# Jahia DX Studio
+repository.xml.generated
