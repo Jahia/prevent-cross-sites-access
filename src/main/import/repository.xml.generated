@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<content xmlns:j="http://www.jahia.org/jahia/1.0" xmlns:jcr="http://www.jcp.org/jcr/1.0">
+   <modules jcr:primaryType="jnt:modules">
+      <sample j:dependencies="default"
+              j:modulePriority="0"
+              j:moduleType="module"
+              j:title="sample"
+              jcr:mixinTypes="jmix:hasExternalProviderExtension"
+              jcr:primaryType="jnt:module">
+         <sources j:title="sample (1.0.0-SNAPSHOT)"
+                  jcr:mixinTypes="jmix:hasExternalProviderExtension"
+                  jcr:primaryType="jnt:moduleVersionFolder"
+                  j:staticMountPointProviderKey="module-sample-1.0.0-SNAPSHOT">
+            <src jcr:mixinTypes="jmix:hasExternalProviderExtension"
+                 jcr:primaryType="jnt:folder">
+               <main jcr:mixinTypes="jmix:hasExternalProviderExtension"
+                     jcr:primaryType="jnt:folder">
+                  <resources jcr:mixinTypes="jmix:hasExternalProviderExtension"
+                             jcr:primaryType="jnt:folder">
+                     <META-INF jcr:mixinTypes="jmix:hasExternalProviderExtension"
+                               jcr:primaryType="jnt:metaInfFolder">
+                        <seo-urlrewrite-duxx.xml jcr:primaryType="jnt:xmlFile"
+                                                 sourceCode="&lt;urlrewrite&gt;&#xA; &#xA;&lt;rule&gt;&#xA;    &lt;note&gt;&#xA;        Stop ENTITY keyword&#xA;    &lt;/note&gt;&#xA;    &lt;name&gt;StopENTITYKEYWORD&lt;/name&gt;&#xA;    &lt;from&gt;.+&lt;/from&gt;&#xA;    &lt;set type=&#34;status&#34;&gt;403&lt;/set&gt;&#xA;    &lt;to last=&#34;true&#34;&gt;null&lt;/to&gt;&#xA;&lt;/rule&gt;&#xA;&lt;/urlrewrite&gt;"/>
+                     </META-INF>
+                  </resources>
+               </main>
+            </src>
+         </sources>
+         <portlets jcr:primaryType="jnt:portletFolder"/>
+         <files jcr:primaryType="jnt:folder"/>
+         <contents jcr:primaryType="jnt:contentFolder"/>
+         <templates j:rootTemplatePath="/base" jcr:primaryType="jnt:templatesFolder">
+            <files jcr:primaryType="jnt:folder"/>
+            <contents jcr:primaryType="jnt:contentFolder"/>
+         </templates>
+      </sample>
+   </modules>
+</content>

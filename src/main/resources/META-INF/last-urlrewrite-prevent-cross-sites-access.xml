@@ -1,0 +1,9 @@
+<urlrewrite>
+    <rule>
+        <name>Prevent cross script access</name>
+        <condition type="attribute" name="prevent_cross_script" operator="equal">^true$</condition>
+        <from>/sites/[a-zA-Z0-9\-]+/.+$</from>
+        <set type="status">403</set>
+        <to last="true">null</to>
+    </rule>
+</urlrewrite>
