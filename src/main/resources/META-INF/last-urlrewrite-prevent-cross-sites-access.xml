@@ -4,7 +4,7 @@
     <rule>
         <name>Prevent cross script access</name>
         <condition type="attribute" name="prevent_cross_script">^true$</condition>
-        <set type="status">403</set>
+        <set type="status">400</set>
         <to last="true">null</to>
     </rule>
 </urlrewrite>
