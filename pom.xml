@@ -16,6 +16,11 @@
     <packaging>bundle</packaging>
     <description>This is the custom module (prevent-cross-sites-access) for running on a Jahia server.</description>
 
+    <properties>
+        <jahia.plugin.version>6.9</jahia.plugin.version>
+        <jahia-module-type>system</jahia-module-type>
+    </properties>
+
     <scm>
         <connection>scm:git:git@github.com:Jahia/prevent-cross-sites-access</connection>
         <developerConnection>scm:git:git@github.com:Jahia/prevent-cross-sites-access</developerConnection>
