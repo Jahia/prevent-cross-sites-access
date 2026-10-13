@@ -1,0 +1,9 @@
+query getSiteServerName($path: String!) {
+    jcr {
+        nodeByPath(path: $path) {
+            serverName: property(name: "j:serverName") {
+                value
+            }
+        }
+    }
+}
