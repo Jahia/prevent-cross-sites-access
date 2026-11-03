@@ -374,6 +374,20 @@ export const searchUrl = (onSite: string, selectedSites: string): string =>
         `src_sites.values=${selectedSites}`
     ].join('&');
 
+/**
+ * A search on `onSite`'s search-results page that has no term, only a node-property criterion
+ * (`src_properties(jnt:news).desc`), matching the news of the demo site {@link SITE_KEY}. Without
+ * `selectedSites` it sets no site scope at all, which Jahia searches as the whole repository.
+ */
+export const nodePropertySearchUrl = (onSite: string, selectedSites?: string): string =>
+    `/cms/render/live/en/sites/${onSite}/home/search-results.html?` +
+    [
+        'src_languages.values=en',
+        'src_properties(jnt:news).desc.value=company',
+        'src_properties(jnt:news).desc.match=any_word',
+        ...(selectedSites ? [`src_sites.values=${selectedSites}`] : [])
+    ].join('&');
+
 const siteUuidQuery = gql`
     query siteUuid($path: String!) {
         jcr(workspace: LIVE) {

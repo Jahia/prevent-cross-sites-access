@@ -260,28 +260,86 @@ class CrossSitesFilterParameterTest {
         }
     }
 
-    private static Stream<Arguments> requestsJahiaRunsNoSearchFor() {
+    private static Stream<Arguments> requestsThatAreNoPotentialSearch() {
         return Stream.of(
                 Arguments.of(Named.of("unknown src_ property (tracking tag)", "src_ref=newsletter")),
                 Arguments.of(Named.of("unknown src_ property", "src_x=1")),
                 Arguments.of(Named.of("unknown nested src_ property", "src_ref.y=2&src_x[0]=3")),
-                Arguments.of(Named.of("foreign site but no criterion", "src_sites.values=siteA")),
-                Arguments.of(Named.of("every site but no criterion", "src_sites.values=-all-")),
-                Arguments.of(Named.of("blank term", "src_terms[0].term=   &src_sites.values=siteA")),
-                Arguments.of(Named.of("'anytime' dates are no criterion", "src_created.type=anytime&src_lastModified.type=ANYTIME&src_sites.values=siteA")),
-                Arguments.of(Named.of("a date bound without a type is no criterion", "src_created.from=2020-01-01&src_sites.values=siteA")),
-                Arguments.of(Named.of("includeChildren alone is no path", "src_pagePath.includeChildren=true")),
+                Arguments.of(Named.of("property names are case-sensitive in BeanUtils", "src_Sites.values=siteA")),
+                Arguments.of(Named.of("a lone blank site value", "src_sites.values=")),
+                Arguments.of(Named.of("only blank values", "src_terms[0].term=   &src_sitesForReferences.values=")),
                 Arguments.of(Named.of("own site and a blank reference list", "src_sites.values=siteB&src_sitesForReferences.values=")));
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
-    @MethodSource("requestsJahiaRunsNoSearchFor")
-    @DisplayName("src_ parameters that make Jahia run no search pass, whatever their site values")
-    void doFilter_noSearchRun_passes(String query) throws Exception {
+    @MethodSource("requestsThatAreNoPotentialSearch")
+    @DisplayName("src_ parameters naming no SearchCriteria property, or carrying only blanks, pass")
+    void doFilter_noPotentialSearch_passes(String query) throws Exception {
         query(query);
         path("/cms/render/live/en/sites/siteB/home.html");
         run();
         assertPassed();
+    }
+
+    private static Stream<Arguments> potentialSearchesBeyondTheHostSite() {
+        return Stream.of(
+                // Jahia would run no search for these, but the scope is judged whether it runs or not.
+                Arguments.of(Named.of("foreign site without a criterion", "src_sites.values=siteA")),
+                Arguments.of(Named.of("every site without a criterion", "src_sites.values=-all-")),
+                Arguments.of(Named.of("blank term, foreign site", "src_terms[0].term=   &src_sites.values=siteA")),
+                Arguments.of(Named.of("'anytime' dates, foreign site", "src_created.type=anytime&src_sites.values=siteA")),
+                Arguments.of(Named.of("includeChildren alone has no scope", "src_pagePath.includeChildren=true")),
+                Arguments.of(Named.of("a real property that is no criterion, no scope", "src_languages.values=en")),
+                // Node-property criteria (SearchCriteria#getProperties), measured live on 8.2.3.2.
+                Arguments.of(Named.of("node property value, no scope",
+                        "src_languages.values=en&src_properties(jnt:news).desc.value=company&src_properties(jnt:news).desc.match=any_word")),
+                Arguments.of(Named.of("node property value, foreign site",
+                        "src_properties(jnt:news).desc.value=company&src_sites.values=siteA")),
+                Arguments.of(Named.of("node property match alone, no scope", "src_properties(jnt:news).desc.match=any_word")),
+                Arguments.of(Named.of("boolean node property, no scope", "src_properties(jnt:page).j:isHomePage.value=true")),
+                Arguments.of(Named.of("category node property, every site",
+                        "src_properties(jmix:categorized).j:defaultCategory.categoryValue.value=/sites/systemsite/categories&src_sites.values=-all-")),
+                Arguments.of(Named.of("date node property, no scope", "src_properties(jnt:news).date.dateValue.type=today")),
+                Arguments.of(Named.of("date node property, foreign page path",
+                        "src_properties(jnt:news).date.dateValue.type=today&src_pagePath.value=/sites/siteA")));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("potentialSearchesBeyondTheHostSite")
+    @DisplayName("any potential search whose scope reaches beyond the hostname's site is answered 404")
+    void doFilter_potentialSearchBeyondHostSite_blocked(String query) throws Exception {
+        query(query);
+        path(OWN_SEARCH_PATH);
+        run();
+        assertBlocked();
+    }
+
+    private static Stream<Arguments> nodePropertySearchesOnTheOwnSite() {
+        return Stream.of(
+                Arguments.of(Named.of("node property value", "src_properties(jnt:news).desc.value=company&src_properties(jnt:news).desc.match=any_word")),
+                Arguments.of(Named.of("boolean node property", "src_properties(jnt:page).j:isHomePage.value=true")),
+                Arguments.of(Named.of("category node property", "src_properties(jmix:categorized).j:defaultCategory.categoryValue.value=/sites/systemsite/categories")),
+                Arguments.of(Named.of("date node property", "src_properties(jnt:news).date.dateValue.type=today")));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("nodePropertySearchesOnTheOwnSite")
+    @DisplayName("a node-property search scoped to the hostname's site and systemsite passes")
+    void doFilter_nodePropertySearchOnOwnSite_passes(String query) throws Exception {
+        query(query + "&src_languages.values=en&src_sites.values=siteB&src_sitesForReferences.values=systemsite");
+        path(OWN_SEARCH_PATH);
+        run();
+        assertPassed();
+    }
+
+    @Test
+    @DisplayName("the potential-search properties are read from SearchCriteria itself and match the fallback list")
+    void criteriaProperties_introspectedFromSearchCriteria() {
+        assertThat(SearchParameterCheck.isIntrospected()).isTrue();
+        assertThat(SearchParameterCheck.criteriaProperties())
+                .contains("sites", "sitesForReferences", "pagePath", "filePath", "properties", "terms", "nodeType")
+                .doesNotContain("ref", "class")
+                .isEqualTo(SearchParameterCheck.FALLBACK_PROPERTIES);
     }
 
     @Test
@@ -437,10 +495,23 @@ class CrossSitesFilterParameterTest {
         assertBlocked();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"", " "})
+    @DisplayName("a blank jsite selects no site (Jahia answers it with an error) and passes without a log line")
+    void doFilter_jsiteBlank_passes(String value) throws Exception {
+        param("jsite", value);
+        path("/cms/render/live/en/sites/siteB/home.html");
+        run();
+        assertPassed();
+        assertThat(logged("info")).isEmpty();
+        assertThat(idLookups).isEmpty();
+    }
+
     @Test
-    @DisplayName("an empty jsite is not the hostname's site and is blocked")
-    void doFilter_jsiteEmpty_blocked() throws Exception {
+    @DisplayName("a blank jsite next to a foreign one is still blocked")
+    void doFilter_jsiteBlankAndForeign_blocked() throws Exception {
         param("jsite", "");
+        param("jsite", SITE_A_ID);
         path("/cms/render/live/en/sites/siteB/home.html");
         run();
         assertBlocked();

@@ -356,7 +356,8 @@ public class CrossSitesFilter extends AbstractServletFilter {
             return null;
         }
         for (String value : values) {
-            if (!isAllowedSiteId(StringUtils.defaultString(value), siteKeyFromHost)) {
+            // A blank jsite selects no site: Render fails on it with an error of its own.
+            if (StringUtils.isNotBlank(value) && !isAllowedSiteId(value, siteKeyFromHost)) {
                 return new ParameterViolation(JSITE_PARAMETER, "site node '" + value + "'");
             }
         }

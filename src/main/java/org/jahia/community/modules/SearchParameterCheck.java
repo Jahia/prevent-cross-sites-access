@@ -2,44 +2,58 @@ package org.jahia.community.modules;
 
 import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.commons.lang.StringUtils;
+import org.jahia.services.search.SearchCriteria;
 import org.jahia.services.sites.JahiaSitesService;
+import org.slf4j.LoggerFactory;
 
+import java.beans.IntrospectionException;
+import java.beans.Introspector;
+import java.beans.PropertyDescriptor;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 
 /**
- * Decides whether the search parameters ({@code src_*}) of a request make Jahia run a search whose
- * scope reaches beyond the hostname's site and systemsite. Pure string logic, no Jahia service.
+ * Decides whether the search parameters ({@code src_*}) of a request select a search scope beyond the
+ * hostname's site and systemsite. String logic plus one cached introspection of {@code SearchCriteria}.
  *
- * <p>What it mirrors, read in jahia-impl {@code JAHIA_8_2_3_0} source and checked against the
+ * <p><b>The rule.</b> A request is a <em>potential search</em> when one {@code src_} parameter with a
+ * non-blank value starts with a real property of {@code org.jahia.services.search.SearchCriteria}
+ * ({@code src_<property>...}). The property set is read from the class at runtime with
+ * {@link Introspector} (read or write method, so nested forms such as
+ * {@code src_properties(jnt:news).desc.value} count), and falls back to {@link #FALLBACK_PROPERTIES}
+ * if the class cannot be introspected. For every potential search the effective scope is judged,
+ * whether or not Jahia would actually run it; no scope at all is the whole repository and is refused.
+ *
+ * <p><b>Why not mirror {@code SearchCriteria#isEmpty()}.</b> Deciding which criteria make Jahia run a
+ * search means keeping a list of criteria in step with Jahia, and one missing entry (node properties,
+ * {@code src_properties(...)}, measured on 8.2.3.2) let a foreign search through. Judging the scope of
+ * every potential search errs on the safe side: the worst case is a 404 for a request that names a
+ * search property, carries a value, and sets no scope, which no Jahia search form produces.
+ *
+ * <p>What stays mirrored, read in jahia-impl {@code JAHIA_8_2_3_0} source and checked against the
  * jahia-impl 8.2.3.2 jar with commons-beanutils 1.9.4 (populating a real {@code SearchCriteria} the way
- * the factory does):
+ * {@code SearchCriteriaFactory#getInstance} does):
  *
  * <ol>
- *   <li><b>When a search runs.</b> {@code SearchCriteriaFactory#getInstance} builds criteria only when a
- *       parameter starts with {@code src_} ({@code isRequestDataPresent}). The search module's
- *       {@code <s:results>} ({@code org.jahia.taglibs.search.ResultsTag#searchAndSetAttributes}, with
- *       {@code allowEmptySearchTerm} false by default and not set by the search module 8.3.0's
- *       {@code searchResults.jsp}) runs nothing when {@code SearchCriteria#isEmpty()}: every term blank,
- *       {@code nodeType}, {@code fileType}, {@code createdBy}, {@code lastModifiedBy} blank,
- *       {@code created} / {@code lastModified} of type {@code ANYTIME} (the default), and
- *       {@code pagePath} / {@code filePath} without a non-blank value. Site lists do not count. A
- *       request that sets none of these is not a search and is never refused here.</li>
  *   <li><b>Unknown properties.</b> {@code BeanUtilsBean#populate} skips a property the bean does not
  *       have, nested or not, so {@code src_ref=newsletter} changes nothing (measured: no exception,
- *       criteria unchanged). Property names are case-sensitive.</li>
- *   <li><b>Blank site values.</b> {@code JahiaJCRSearchProvider#buildSQL2Query} / {@code buildXpathQuery}
- *       use the site list only when {@code MultipleValue#isEmpty()} is false, i.e. when one value is
- *       non-blank. A lone blank {@code src_sitesForReferences.values=} becomes {@code []} and is ignored;
- *       a lone blank {@code src_sites.values=} leaves the search unscoped. A blank element next to a
- *       non-blank one is kept and becomes the scope {@code /sites/} (every site): a repeated parameter
- *       ({@code ["siteB", ""]}) or a quoted empty token for {@code ArrayConverter} ({@code siteB,""}).</li>
+ *       criteria unchanged). Property names are case-sensitive. Such parameters are ignored here.</li>
+ *   <li><b>Blank values.</b> A blank value is no criterion for any {@code SearchCriteria} property
+ *       ({@code isValueEmpty} is {@code isBlank}); a parameter with only blank values does not make a
+ *       potential search. {@code JahiaJCRSearchProvider#buildSQL2Query} / {@code buildXpathQuery} use a
+ *       site list only when {@code MultipleValue#isEmpty()} is false: a lone blank
+ *       {@code src_sitesForReferences.values=} becomes {@code []} and is ignored; a lone blank
+ *       {@code src_sites.values=} sets no scope. A blank element next to a non-blank one is kept and
+ *       becomes the scope {@code /sites/} (every site): a repeated parameter ({@code ["siteB", ""]}) or a
+ *       quoted empty token for {@code ArrayConverter} ({@code siteB,""}).</li>
  *   <li><b>Scope.</b> {@code filePath}, else {@code pagePath}, else {@code sites} plus
  *       {@code sitesForReferences}; with none of them the query has no scope. {@code -all-} as the first
  *       site is every site. {@code ResultsTag#getSearchCriteria} replaces a page path outside
@@ -48,8 +62,7 @@ import java.util.regex.Pattern;
  *
  * <p>Where the parsers are lax the check over-approximates: each parameter is judged as if BeanUtils
  * applied it last (the factory iterates a {@code HashMap}), and a site value is cut into candidate keys
- * more finely than any one parser does. Not covered: a template that sets
- * {@code allowEmptySearchTerm="true"} runs a search on any {@code src_} parameter.
+ * more finely than any one parser does.
  */
 final class SearchParameterCheck {
 
@@ -62,17 +75,6 @@ final class SearchParameterCheck {
 
     /** Path properties, in the order the provider prefers them; each takes precedence over the site list. */
     private static final List<String> PATH_PROPERTIES = Collections.unmodifiableList(Arrays.asList("filePath", "pagePath"));
-
-    /** String properties that make the criteria non-empty when non-blank. */
-    private static final Set<String> TEXT_CRITERIA = setOf("nodeType", "fileType", "createdBy", "lastModifiedBy");
-
-    /** {@code DateValue} properties: a criterion unless their type is {@code ANYTIME}. */
-    private static final Set<String> DATE_CRITERIA = setOf("created", "lastModified");
-    private static final String DATE_TYPE_SUFFIX = ".type";
-    private static final String ANYTIME = "anytime";
-
-    private static final String TERMS_PROPERTY = "terms";
-    private static final String TERM_SUFFIX = ".term";
 
     /** The boolean sub-property of the path properties, the only one that carries no path. */
     private static final String INCLUDE_CHILDREN_SUFFIX = ".includeChildren";
@@ -92,7 +94,48 @@ final class SearchParameterCheck {
 
     private static final Pattern SAME_NAME_SIBLING_INDEX = Pattern.compile("\\[\\d*\\]$");
 
+    /**
+     * The {@code SearchCriteria} bean properties of jahia-impl 8.2.3.2, read or write, as
+     * {@link Introspector} reports them; used only if the class cannot be introspected at runtime.
+     */
+    static final Set<String> FALLBACK_PROPERTIES = setOf("created", "createdBy", "empty", "excludeFileReferences",
+            "facetDefinitions", "facets", "filePath", "fileSearch", "fileType", "itemsPerPage", "languages",
+            "lastModified", "lastModifiedBy", "limit", "nodeType", "offset", "orderings", "originSiteKey", "pagePath",
+            "properties", "propertiesAll", "rawQuery", "siteSearch", SITES_PROPERTY, "sitesForReferences", "term", "terms");
+
     private SearchParameterCheck() {
+    }
+
+    /** Read once, on first use. The class literal does not initialise {@code SearchCriteria}. */
+    private static final class CriteriaProperties {
+        private static final Optional<Set<String>> INTROSPECTED = introspect();
+        static final Set<String> NAMES = INTROSPECTED.orElse(FALLBACK_PROPERTIES);
+
+        private static Optional<Set<String>> introspect() {
+            try {
+                final Set<String> names = new TreeSet<>();
+                for (PropertyDescriptor property : Introspector.getBeanInfo(SearchCriteria.class, Object.class)
+                        .getPropertyDescriptors()) {
+                    if (property.getReadMethod() != null || property.getWriteMethod() != null) {
+                        names.add(property.getName());
+                    }
+                }
+                return Optional.of(Collections.unmodifiableSet(names));
+            } catch (IntrospectionException | LinkageError | RuntimeException e) {
+                LoggerFactory.getLogger(SearchParameterCheck.class)
+                        .warn("Cannot introspect SearchCriteria, using the jahia-impl 8.2.3.2 property list", e);
+                return Optional.empty();
+            }
+        }
+    }
+
+    /** The {@code SearchCriteria} property names a {@code src_} parameter can set. */
+    static Set<String> criteriaProperties() {
+        return CriteriaProperties.NAMES;
+    }
+
+    static boolean isIntrospected() {
+        return CriteriaProperties.INTROSPECTED.isPresent();
     }
 
     static boolean isSearchParameter(String name) {
@@ -100,11 +143,11 @@ final class SearchParameterCheck {
     }
 
     /**
-     * @return the first parameter through which a search Jahia would run reaches beyond the hostname's
-     *         site and systemsite, or null
+     * @return the first parameter through which a potential search reaches beyond the hostname's site
+     *         and systemsite, or null
      */
     static ParameterViolation findViolation(Map<String, String[]> parameters, Set<String> sites, String siteKeyFromHost) {
-        if (!isSearchRun(parameters)) {
+        if (!isPotentialSearch(parameters)) {
             return null;
         }
         for (Map.Entry<String, String[]> parameter : parameters.entrySet()) {
@@ -122,24 +165,15 @@ final class SearchParameterCheck {
         return null;
     }
 
-    /** {@code !SearchCriteria#isEmpty()}, judged per parameter. */
-    private static boolean isSearchRun(Map<String, String[]> parameters) {
+    /** A non-blank value on a real {@code SearchCriteria} property; no criterion list to keep up to date. */
+    private static boolean isPotentialSearch(Map<String, String[]> parameters) {
         for (Map.Entry<String, String[]> parameter : parameters.entrySet()) {
             final String name = parameter.getKey();
-            if (isSearchParameter(name) && isCriterion(name, property(name), elements(parameter.getValue()))) {
+            if (isSearchParameter(name) && criteriaProperties().contains(property(name))
+                    && parameter.getValue() != null
+                    && Arrays.stream(parameter.getValue()).anyMatch(StringUtils::isNotBlank)) {
                 return true;
             }
-        }
-        return false;
-    }
-
-    private static boolean isCriterion(String name, String property, List<String> elements) {
-        if (TEXT_CRITERIA.contains(property) || isPathParameter(name, property)
-                || TERMS_PROPERTY.equals(property) && name.endsWith(TERM_SUFFIX)) {
-            return hasNonBlank(elements);
-        }
-        if (DATE_CRITERIA.contains(property) && name.endsWith(DATE_TYPE_SUFFIX)) {
-            return elements.stream().anyMatch(e -> StringUtils.isNotBlank(e) && !ANYTIME.equalsIgnoreCase(e.trim()));
         }
         return false;
     }

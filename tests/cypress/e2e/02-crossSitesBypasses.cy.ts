@@ -12,6 +12,7 @@ import {
     FOREIGN_SITE_PATH,
     foreignFileUrlWithKey,
     foreignRenderUrl,
+    nodePropertySearchUrl,
     readSiteServerName,
     readSiteUuid,
     searchUrl,
@@ -123,6 +124,20 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
 
     it('still serves a search scoped to the own site on its own hostname', () => {
         expectStatus(ownSearchUrl, FOREIGN_SERVER_NAME, 200);
+    });
+
+    it('blocks a node-property search on the own site that sets no site scope', () => {
+        // No term and no src_sites: Jahia still runs it on the node-property criterion, over the whole
+        // repository. The control is the same search scoped to the own site.
+        expectSelectionBlocked(
+            nodePropertySearchUrl(FOREIGN_SITE_KEY),
+            nodePropertySearchUrl(FOREIGN_SITE_KEY, FOREIGN_SITE_KEY),
+            FOREIGN_SERVER_NAME
+        );
+    });
+
+    it('still serves a node-property search scoped to the own site on its own hostname', () => {
+        expectStatus(nodePropertySearchUrl(FOREIGN_SITE_KEY, FOREIGN_SITE_KEY), FOREIGN_SERVER_NAME, 200);
     });
 
     it("blocks the own site's page rendered with another site's jsite", () => {
