@@ -17,6 +17,7 @@ Without the module, Jahia returns the intranet's live home page, because the pro
 Request forms the filter checks, all against the same decoded path that Jahia renders from:
 
 - the percent-encoded `/sites/` segment, e.g. `%73ites` for `sites`;
+- the `/sites` node itself, as in `/sites.html.ajax` or `/sites/.html.ajax` (and their `{}` and suffix forms). That path names no site key, but on Jahia 8.2.3.2 the node's view lists every site's title, server name and top-level nodes over any hostname, so it is refused on a mapped hostname (measured). A page that merely contains a `sites` segment under the visitor's own site is not affected. Known over-block: a top-level path of the form `/<one-segment>/sites.<ext>`, such as a static asset at exactly `/<x>/sites.css`, looks like the SEO form and is refused;
 - FORWARD dispatches as well as REQUEST, which matters where the SEO inbound rule forwards and decodes the path a second time (Jahia 8.2.3.2);
 - the JCR expanded-name form `{}name` (empty namespace), which addresses the same node as `name`; on released 8.2.3.7 the path `/cms/render/live/en/sites/%7B%7D<other>/home.html` served the other site before this check was added (measured);
 - a trailing `/` and a trailing `/*`, which are removed before the site key is read, as the renderer does;
@@ -28,9 +29,9 @@ Request forms the filter checks, all against the same decoded path that Jahia re
 Once the path has passed, two families of request parameter are checked against the hostname's site. The check runs on live requests whose hostname maps to a site, not on authoring paths or error pages.
 
 - **`jsite=<site node identifier>`**: the renderer uses it to swap the site the page is rendered in. A request is refused unless the identifier is the hostname's site or `systemsite`. Every value counts when the parameter is repeated.
-- **Search parameters, `src_*`**: Jahia's search module reads them into its search criteria. The site scope comes from `src_sites.values` / `src_sites.value` (repeated or comma-separated), `src_sitesForReferences`, and, when set, `src_pagePath` / `src_filePath`. A request is refused when that scope reaches another existing site, reaches every site (`-all-`, a blank value, a path outside `/sites/<key>`), or has no site or path scope at all, which would search the whole repository.
+- **Search parameters, `src_*`**: Jahia's search module reads them into its search criteria. A request is judged only when Jahia would actually run a search, that is when some criterion is set: a non-blank search term, a node or file type, an author, a date other than "anytime", or a path. A site list on its own does not make a search. Unknown `src_*` parameters are ignored, as Jahia ignores them, so `?src_ref=newsletter` keeps working. A lone blank site value is ignored too. When a search does run, its site scope comes from `src_sites.values` / `src_sites.value` (repeated or comma-separated), `src_sitesForReferences`, and, when set, `src_pagePath` / `src_filePath`. The request is refused when that scope reaches another existing site, reaches every site (`-all-`, a blank element next to a non-blank one, a path outside `/sites/<key>`), or the search has no site or path scope at all, which would search the whole repository.
 
-Trade-off: a deliberate "search all sites" feature on a mapped hostname now gets 404. The site's own search form sends its own site and keeps working.
+The rules are in the package-private class `SearchParameterCheck`. Trade-off: a deliberate "search all sites" feature on a mapped hostname now gets 404. The site's own search form sends its own site and keeps working.
 
 If the site identifier cannot be read for `jsite`, the request is let through with a WARN (see Diagnosing).
 
@@ -60,6 +61,7 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 - **A path naming a site that does not exist is not blocked.** Jahia answers 404 itself.
 - **The control is driven by the hostname and stands down when the hostname maps to no site.** A bare IP address, an internal load-balancer name, or `localhost` is not restricted. Anyone who can reach the server under such a name can read any site.
 - **Fail-open on lookup errors.** If the site list or the hostname lookup cannot be read, or the site list is empty, requests are let through unchecked. If the identifier of a site needed for `jsite` cannot be read, that request is let through as well. This is logged (see Diagnosing below).
+- **A search template with `allowEmptySearchTerm="true"` is not covered.** Such a template runs a search on any `src_*` parameter, even when no criterion is set. The empty-criteria rule does not see that case, so a request whose only `src_*` parameters add no criterion is not checked on that template, and a site scope set that way is not refused. The search module's own results page does not set it, per the Javadoc of `SearchParameterCheck`; individual site templates were not checked.
 - **Error pages are not enforced.** While Jahia renders an error page, the filter does not check the request. The error servlet may forward to a site-level error page under `/errors/sites/<key>/`, which must not be re-blocked into a bare 404. Whether a visitor can reach another site's error page this way was not measured.
 - **No configuration and no per-site switch.** The only way to turn the protection off is to stop the bundle.
 - **One defence depends on the Jahia core version.** Jahia core's own `MalformedRequestFilter` (which rejects double-encoded and non-normalised URLs with 400) is present in 8.2.3.7 and in the 8-SNAPSHOT image used for testing (an 8.2.4.0-SNAPSHOT build). It is absent from jahia-impl 8.2.3.2 and earlier. The module does not rely on it: it also checks forwarded requests, which blocks the double-encoding bypass on 8.2.3.2. On 8.2.3.2, dot-segment requests are still refused with 400 by a layer before the module; that layer was not identified, and it is not attributed to `MalformedRequestFilter`.
@@ -68,8 +70,8 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 
 - **Jahia:** 8.2.3.2 or later. The bundle declares `Jahia-Required-Version: 8.2.3.2` and is built against the `jahia-modules` parent 8.2.3.2. It does not install on earlier Jahia versions.
 - **Java:** the bundle targets Java 11. Build with JDK 11 or later.
-- **Tested end to end** on Jahia 8-SNAPSHOT and 8.2.3.2 for the current change set (the last recorded run was green on both). Earlier measurements, made before the current parent, also covered 8.2.3.7.
-- **Build:** `mvn clean install` at the repository root produces `target/prevent-cross-sites-access-1.0.1-SNAPSHOT.jar`. The unit tests run as part of the build and need no Docker. The tests use Java 11 APIs and Mockito 5.
+- **Tested end to end** on Jahia 8-SNAPSHOT and 8.2.3.2 for the current change set (the last recorded run, 34 Cypress tests, was green on both). Earlier measurements, made before the current parent, also covered 8.2.3.7.
+- **Build:** `mvn clean install` at the repository root produces `target/prevent-cross-sites-access-1.0.1-SNAPSHOT.jar`. The unit tests run as part of the build and need no Docker. The tests use Java 11 APIs and Mockito 5. The released manifest does not carry `Jahia-Source-Folders`, so the builder's checkout path is not published (the parent's header is removed in `pom.xml`).
 - **Deploy:** install the jar as any other Jahia 8 module (Module Manager upload, or the modules deploy directory of your installation). No site or module settings are needed.
 - **Disabling:** stop the bundle (`Bundle-Name: Prevent Cross Sites Access`, symbolic name `prevent-cross-sites-access`). There is no other switch.
 
@@ -85,7 +87,8 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 - **Authoring and default-workspace URLs are no longer blocked.** Jahia login and ACLs govern them.
 - **Trailing-dot hostnames and the `{}` expanded-name form are now enforced.**
 - **Trailing `/` and `/*` are removed before the site key is read.**
-- **Site-selecting request parameters are checked.** A search that selects another site, or every site, and a `jsite` naming another site's node are now answered 404. A search that selects no site or path, which searches the whole repository, is also answered 404.
+- **Site-selecting request parameters are checked.** A search that Jahia would run and that selects another site, or every site, is answered 404, and so is a `jsite` naming another site's node. A search Jahia would run with no site or path scope, which would search the whole repository, is also answered 404. Unknown `src_*` parameters and a lone blank site value do not make a request a search, so they are not refused.
+- **The `/sites` node itself is blocked on a mapped hostname** (`/sites.html.ajax` and its forms). Whether 1.0.0 served it was not checked for this note.
 - **Error pages are not enforced** (see "What it does NOT cover").
 - **The urlrewrite rule file has been removed.** 1.0.0 used one.
 - **Log output changed:**
@@ -115,7 +118,7 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
    Blocked cross-site access: parameter 'P' selects <target> but hostname 'H' maps to site 'Y', path: <decoded path>, referer: <referer or ->
    ```
 
-   `<target>` is `site 'Z'` for a site key, `site node '<uuid>'` for `jsite`, or `every site (...)` for a search with no scope or with a scope that covers every site.
+   `<target>` is `site 'Z'` for a site key, `site node '<uuid>'` for `jsite`, or `every site (...)` for a search with no scope or with a scope that covers every site. A path that addresses the `/sites` node itself reads `path addresses the sites root '/sites' but hostname 'H' maps to site 'Y'`.
 
    `X` is the site the URL addresses, `Y` the site the request's hostname maps to, and `H` the hostname the server saw, with trailing dots removed. The path is the decoded form. Control, format and line-separator characters are replaced by `?`; a path or referer longer than 512 characters is cut and followed by `…`. The referer is the page that linked to the blocked URL or issued the search, which is usually the page to fix.
 4. **Jahia's `ErrorLoggingFilter` logs the 404 separately.** Use it to correlate the request.
@@ -136,7 +139,7 @@ Unit tests (JUnit 5, JDK 11 or later, no Docker needed):
 mvn clean install
 ```
 
-The JUnit tests cover what HTTP cannot observe, since a block and an unknown site key both answer 404: the site-key resolver, the decision matrix, the authoring-path pattern, hostname normalisation, the site-selecting request parameters, and failure handling.
+The JUnit tests cover what HTTP cannot observe, since a block and an unknown site key both answer 404: the site-key resolver, the `/sites` node check, the decision matrix, the authoring-path pattern, hostname normalisation, the site-selecting request parameters (`SearchParameterCheck` and `jsite`), and failure handling.
 
 SonarQube analysis: `mvn clean install sonar:sonar` works as it is on Java 11. The parent brings `sonar-maven-plugin` 5.6.0, which provisions its own Java runtime.
 

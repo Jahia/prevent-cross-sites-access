@@ -5,9 +5,10 @@ Guidance for an AI agent or a maintainer about to change `prevent-cross-sites-ac
 ## Layout
 
 - `src/main/java/org/jahia/community/modules/CrossSitesFilter.java`: the whole module, one servlet filter registered as an OSGi component. Its Javadoc is the decision contract.
-- `src/test/java/org/jahia/community/modules/`: `CrossSitesFilterTest` (decision matrix, failure handling, logging), `CrossSitesFilterPathTest` (site-key resolver, normalisation, authoring pattern), `CrossSitesFilterParameterTest` (`src_*` search parameters and `jsite`).
+- `src/main/java/org/jahia/community/modules/SearchParameterCheck.java`: package-private, no Jahia services. The `src_*` rules: when Jahia would run a search (`SearchCriteria#isEmpty`), how unknown properties and blank site values are read, and which scope a search reaches. It was split out of the filter to keep that class small; the filter calls it.
+- `src/test/java/org/jahia/community/modules/`: `CrossSitesFilterTest` (decision matrix, failure handling, logging, the `/sites` root check), `CrossSitesFilterPathTest` (site-key resolver, normalisation, authoring pattern), `CrossSitesFilterParameterTest` (`src_*` search parameters and `jsite`, through `SearchParameterCheck`).
 - `src/main/import/`, `src/main/resources/`: Jahia packaging resources (import, CND, properties). The filter does not read any of them.
-- `pom.xml`: parent `jahia-modules` 8.2.3.2, packaging `bundle`, Surefire 3.6.0 with `failIfNoTests`, JUnit 5, Mockito 5, AssertJ.
+- `pom.xml`: parent `jahia-modules` 8.2.3.2, packaging `bundle`, Surefire 3.6.0 with `failIfNoTests`, JUnit 5, Mockito 5, AssertJ. `jahia.modules.bundle.removeheaders` removes `Jahia-Source-Folders`, so the released manifest does not carry the builder's checkout path. Keep that property when editing the parent or the bundle plugin.
 - `tests/`: the end-to-end harness. `cypress/e2e/01-crossSitesAccess.cy.ts` and `02-crossSitesBypasses.cy.ts` are the specs; `cypress/support/crossSites.ts` holds the fixtures and assertion helpers; `cypress/plugins/index.js` defines the `rawRequest` task. Shell entry points: `ci.build.sh`, `ci.startup.sh`, `set-env.sh`, `env.run.sh`, `env.debug.sh`, `ci.postrun.sh`. Docker: `docker-compose.yml`, `Dockerfile`, `.dockerignore`. `package.json` with `yarn.lock` (Yarn 1). `tests/artifacts/` and `tests/results/` are generated.
 - Never open or print `tests/.env` or `tests/.env.example`. They hold secrets and are not needed to change the code.
 
@@ -34,7 +35,8 @@ The authoritative text is the Javadoc of `CrossSitesFilter` and the README secti
 5. **Read only what the renderer reads.** Parameters come from `getParameterMap()`. Never read the request body. Do not read or write the request attribute that `ServerNameToSiteMapper` caches.
 6. **Keep the registration.** Order 0.5, REQUEST and FORWARD dispatches. The orders of the surrounding filters are defined in jahia-impl's `applicationcontext-basejahiaconfig.xml`; re-check them when moving to a new Jahia line.
 7. **Java 11 and Jahia 8.2.3.2.** The bundle declares `Jahia-Required-Version: 8.2.3.2` and targets Java 11. Do not use newer APIs.
-8. **Keep the existing semantics.** `systemsite` is always allowed. An unknown key is not a cross-site target. An unmapped hostname, `localhost` or an empty hostname means no check (documented fail-open).
+8. **Judge a search only where Jahia runs one.** Mirror `SearchCriteria#isEmpty()` before looking at scope; ignore unknown `src_*` properties and a lone blank site value, as BeanUtils and the provider do. The rules live in `SearchParameterCheck`, so change them there.
+9. **Keep the existing semantics.** `systemsite` is always allowed. An unknown key is not a cross-site target. An unmapped hostname, `localhost` or an empty hostname means no check (documented fail-open).
 
 ## Testing rules
 
@@ -55,6 +57,10 @@ The authoritative text is the Javadoc of `CrossSitesFilter` and the README secti
 - `ci.build.sh` refuses a jar older than any file under `../src` or `../pom.xml`. A stale jar is the usual cause of a failed run after an edit.
 - `tests/.yarnrc.yml` is a Yarn Berry file, but `packageManager` pins Yarn 1.22.22 and the test image runs Yarn 1. A host `yarn install` can rewrite the lockfile.
 - `set-env.sh` sources `tests/.env` into the current shell. Run `source set-env.sh` again in each new terminal.
+- `./ci.startup.sh notests` boots Jahia WITHOUT provisioning. Provisioning runs in the Cypress container, so a `notests` stack has no `digitall` and no test site. To inspect a provisioned platform, run the full suite: `ci.startup.sh` leaves the `jahia` container running afterwards (only `cypress` exits), with both test sites provisioned, so it can be probed on `localhost:8080`. Stop it with `docker compose -f tests/docker-compose.yml down`.
+- `allowEmptySearchTerm="true"` on a search template makes Jahia run a search on any `src_*` parameter. `SearchParameterCheck` mirrors the default empty-criteria rule and does not cover that template setting. Any change near this rule must say so.
+- The `/sites` node (`/sites.html.ajax`, `/sites/.html.ajax`) names no site key. On 8.2.3.2 its view lists every site; on 8-SNAPSHOT it renders an empty body. The root-listing e2e test is therefore conditional on what the unguarded host reveals (`expectServedUnguardedThenBlocked`). A green run on 8-SNAPSHOT proves less for that test.
+- A top-level `/<one-segment>/sites.<ext>` looks like the SEO form and is blocked (known over-block).
 
 ## Open design question
 
@@ -64,7 +70,8 @@ The filter mirrors Jahia's readers as string checks: the path (`resolveSiteKeyFr
 - a FORWARD pass that decodes a second time (`%2564`);
 - the JCR expanded-name form (`{}name`);
 - the renderer's handling of a trailing `/` and `/*`;
-- request parameters read by `Render` and by the search module (`jsite`, `src_*`).
+- request parameters read by `Render` and by the search module (`jsite`, `src_*`);
+- the `/sites` node itself, which names no site key (`/sites.html.ajax`).
 
 Every fix mirrors one more reader. A new reader, or a parser change in Jahia, reopens the class. The alternative is a render-chain check: compare the site of the node the renderer actually resolved with the hostname's site. That check would have to sit later in the chain, closer to the renderer, and it would not have been checked against any of the bypasses above. This is not implemented, and its trade-offs are not measured. Settle it before adding a fourth reader.
 

@@ -49,7 +49,7 @@ Rebuild the jar after every Java change. If you edit a source file after the bui
 
 ## Choosing the Jahia image
 
-The image is selected with `JAHIA_IMAGE`. The last recorded run of the current suite (32 tests) was green on Jahia 8-SNAPSHOT and on 8.2.3.2. Earlier runs also covered 8.2.3.7.
+The image is selected with `JAHIA_IMAGE`. The last recorded run of the current suite (34 tests) was green on Jahia 8-SNAPSHOT and on 8.2.3.2. Earlier runs also covered 8.2.3.7.
 
 Use **8.2.3.2 as the reference target**. Jahia core's own `MalformedRequestFilter` is absent there, so double-encoded and non-normalised URLs reach the module, and a green run shows that the module itself refuses them. On 8.2.3.7 and on the 8-SNAPSHOT image that core filter is present and rejects such URLs with 400 before the module runs. The specs still pass there, but for those forms they no longer prove anything about the module. Their assertions are written as properties ("foreign content is not served"), so they hold whichever layer refuses. Run both images when you change the filter: a defect that core masks on a newer image shows up on 8.2.3.2.
 
@@ -73,6 +73,8 @@ To boot Jahia without running the specs, for instance to poke at it by hand:
 ```bash
 ./ci.startup.sh notests
 ```
+
+`notests` boots Jahia without provisioning. Provisioning runs in the Cypress container, so a `notests` stack has no `digitall` and no second test site. To inspect a provisioned platform, run the full suite: `ci.startup.sh` leaves the `jahia` container running afterwards (only `cypress` exits), with both test sites provisioned, so it can be probed on `localhost:8080`. Stop it with `docker compose -f tests/docker-compose.yml down`.
 
 ## Debugging Jahia
 
@@ -110,7 +112,7 @@ docker logs jahia 2>&1 | grep CrossSitesFilter
 
 The filter logs one INFO line when it activates (`Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]`). If that line is absent and the logger is at INFO or finer, the filter is not active, and a green run would prove nothing.
 
-Blocked requests appear at INFO, in two forms: `Blocked cross-site access: path addresses site ...` for a path, and `Blocked cross-site access: parameter '...' selects ...` for a request parameter. Both end with `referer: <value>`, or `referer: -` when no Referer header was sent. The DEBUG line for hostnames that map to no site only appears when that logger is raised to DEBUG in Jahia's logging configuration; this suite does not set it. The root README, "Diagnosing a request the module blocked", lists every message and the Karaf commands (`log:get`, `log:set`) that change the level at runtime.
+Blocked requests appear at INFO, in three forms: `Blocked cross-site access: path addresses site ...` for a path, `Blocked cross-site access: path addresses the sites root '/sites' ...` for the `/sites` node itself, and `Blocked cross-site access: parameter '...' selects ...` for a request parameter. Both end with `referer: <value>`, or `referer: -` when no Referer header was sent. The DEBUG line for hostnames that map to no site only appears when that logger is raised to DEBUG in Jahia's logging configuration; this suite does not set it. The root README, "Diagnosing a request the module blocked", lists every message and the Karaf commands (`log:get`, `log:set`) that change the level at runtime.
 
 ## How the specs drive the filter
 
@@ -153,7 +155,7 @@ Both specs restore `digitall`'s original `j:serverName` in `after()`. Spec 01 ca
 
 ## The two specs
 
-Test titles below are the exact `it()` titles in the spec files, so a failing test can be looked up here by name. Titles built from a loop are written out for each value. The two specs contain 19 and 13 tests.
+Test titles below are the exact `it()` titles in the spec files, so a failing test can be looked up here by name. Titles built from a loop are written out for each value. The two specs contain 19 and 15 tests.
 
 ### `01-crossSitesAccess.cy.ts`: `CrossSitesFilter - enforcement` (19 tests)
 
@@ -195,7 +197,7 @@ The dot-segment test is a tripwire on the layer in front of the module. The unma
 
 Unknown site keys and forms where the site key is the last path segment are not asserted over HTTP: they are 404 whether or not the filter acts. The JUnit tests cover them.
 
-### `02-crossSitesBypasses.cy.ts`: `CrossSitesFilter - former bypasses and false positives` (13 tests)
+### `02-crossSitesBypasses.cy.ts`: `CrossSitesFilter - former bypasses and false positives` (15 tests)
 
 These are regression tests for defects that are fixed, plus one control. Both specs are expected to pass.
 
@@ -207,13 +209,23 @@ These are regression tests for defects that are fixed, plus one control. Both sp
 | `systemsite` was treated as a foreign site | shared content under `systemsite` failed on every site using it | `still serves cross-site shared content stored under systemsite` |
 | The search module's `src_sites.values` selected another site while the path named the visitor's own site | measured on 8-SNAPSHOT: the visitor's own search page returned 21 results from the other site | `blocks a search on the own site that selects another site with src_sites`; also `blocks a search on the own site that adds another site in a comma-separated src_sites` |
 | The renderer's `jsite` swapped the render-context site to another site's node | reproduced on 8-SNAPSHOT: the other site's navigation was rendered inside the visitor's page | `blocks the own site's page rendered with another site's jsite` |
-| (control) | a filter that blocked everywhere would satisfy every test above | `leaves the encoded form working on the foreign site's own hostname`, with `still serves a search scoped to the own site on its own hostname` and `still serves the own site's page with its own jsite` as the matching controls for the parameter cases |
+| The `/sites` node itself (`/sites.html.ajax`, `/sites/.html.ajax`) names no site key, so the path check passed it; on 8.2.3.2 its view lists every site's title, server name and top-level nodes over any hostname (measured live) | the mapped host must not serve the foreign site's markers, see the conditional branch below | `blocks the /sites root listing, which names every site, on a mapped hostname` |
+| (control) | a filter that blocked everywhere would satisfy every test above | `leaves the encoded form working on the foreign site's own hostname`, with `still serves a search scoped to the own site on its own hostname`, `still serves the own site's page with its own jsite`, and `still serves the own page carrying src_ parameters that start no search` as the matching controls |
 
 The double-encoding test uses `expectWithheldWhereServed()`, so it is a positive control: where the platform serves the URL on an unguarded host, the mapped host must withhold it.
 
 The `systemsite` test checks a real probe file in `/sites/systemsite/files` by its content, not only its status.
 
 The parameter tests run the other way round from the path tests: the path names the foreign site, `crosssitesother`, on its own hostname, and the parameter selects `digitall`, the site that hostname does not map to.
+
+The `/sites` root test is conditional, because the platform differs. It runs `expectServedUnguardedThenBlocked()` on `/cms/render/live/en/sites.html.ajax` and `/cms/render/live/en/sites/.html.ajax`, with the foreign server name, the foreign site path and the foreign key as markers. The unguarded host is asked first:
+
+- **Where the listing reveals a marker (Jahia 8.2.3.2, measured):** the revealed markers are the ones the block must withhold, and the full `expectBlocked()` check runs: 200 unguarded, 404 on the mapped host, a rendered error page, no marker, body different from the unguarded body.
+- **Where it reveals none (8-SNAPSHOT, measured: an empty body):** the test logs that, and asserts only the weaker property that the mapped host serves none of the markers.
+
+So on 8-SNAPSHOT the root-listing test proves less than on 8.2.3.2. Run both images before relying on it.
+
+The `src_` control test sends `src_ref=newsletter` and a blank `src_sitesForReferences.values` with a site list on the own page. Both must stay 200, because Jahia runs no search for them.
 
 Forms that cannot be observed over HTTP, since a block is a plain 404, are covered by the JUnit tests.
 
@@ -224,6 +236,8 @@ Three classes in `src/test/java/org/jahia/community/modules`:
 - `CrossSitesFilterTest`: the decision matrix with mocked request, response and chain; dispatcher types; log-line sanitisation; failure handling for the site list and the hostname lookup, including the WARN and the INFO on recovery.
 - `CrossSitesFilterPathTest`: the site-key resolver, hostname normalisation, the JCR `{}` normalisation and the authoring-path pattern.
 - `CrossSitesFilterParameterTest`: the site-selecting request parameters: `src_*` search scopes (site lists, path properties, unscoped searches), `jsite` identifiers, identifier caching and re-reading after a site is re-created, and failure handling for the identifier lookup.
+
+The `src_*` rules themselves are in the package-private `SearchParameterCheck`, which the parameter tests exercise. They mirror when Jahia runs a search (`SearchCriteria#isEmpty`), how unknown properties and blank site values are treated, and which scope a search reaches. The `/sites` root check is covered by the path and decision tests.
 
 ```bash
 (cd .. && mvn clean install)
