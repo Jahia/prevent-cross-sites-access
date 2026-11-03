@@ -166,7 +166,16 @@ class CrossSitesFilterTest {
                         "/cms/render/live/en/sites/siteA/home.html"), null),
                 Arguments.of(Named.of("null servletPath, pathInfo is evaluated", null), "/sites/siteA/home.html"),
                 Arguments.of(Named.of("dotted site key resolved against the real list", "/cms/render/live"),
-                        "/sites/acme.fr.default.html"));
+                        "/sites/acme.fr.default.html"),
+                // JCR's {} empty-namespace marker must not hide a foreign site (measured bypass on 8.2.3.7).
+                Arguments.of(Named.of("{} in the site key", "/cms/render/live"), "/en/sites/{}digitall/home.html"),
+                Arguments.of(Named.of("{} in the sites segment", "/cms/render/live"), "/en/{}sites/digitall/home.html"),
+                Arguments.of(Named.of("{} in the SEO short form site key", "/en"), "/sites/{}digitall/home.html"),
+                Arguments.of(Named.of("{} in the SEO short form sites segment", "/en"), "/{}sites/digitall/home.html"),
+                Arguments.of(Named.of("{} in a live file URL", "/files/live"), "/sites/{}digitall/files/a.png"),
+                Arguments.of(Named.of("{}default is not an authoring workspace", "/cms/render/{}default"),
+                        "/en/sites/digitall/home.html"),
+                Arguments.of(Named.of("{} on every segment", "/cms/{}render/{}live"), "/en/sites/{}digitall.html"));
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
@@ -210,23 +219,6 @@ class CrossSitesFilterTest {
         assertThat(logged("info")).hasSize(1).allMatch(m -> m.endsWith("a…")
                 && !m.contains("a".repeat(513))
                 && m.contains("a".repeat(480)));
-    }
-
-    @ParameterizedTest(name = "[{index}] {0}{1}")
-    @org.junit.jupiter.params.provider.CsvSource({
-            "/cms/render/live,/en/sites/{}digitall/home.html",
-            "/cms/render/live,/en/{}sites/digitall/home.html",
-            "/en,/sites/{}digitall/home.html",
-            "/en,/{}sites/digitall/home.html",
-            "/files/live,/sites/{}digitall/files/a.png",
-            "/cms/render/{}default,/en/sites/digitall/home.html",
-            "/cms/{}render/{}live,/en/sites/{}digitall.html"
-    })
-    @DisplayName("JCR's {} empty-namespace marker cannot hide a foreign site")
-    void doFilter_emptyNamespaceMarker_blocked(String servletPath, String pathInfo) throws Exception {
-        path(servletPath, pathInfo);
-        run();
-        assertBlocked();
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
