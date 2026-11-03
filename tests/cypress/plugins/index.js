@@ -21,11 +21,18 @@ const REQUEST_TIMEOUT_MS = 30000;
  */
 const rawRequest = ({host, port, path, headers = {}, method = 'GET'}) =>
     new Promise((resolve, reject) => {
+        const target = `${method} http://${host}:${port}${path}`;
         const request = http.request({host, port, path, method, headers}, response => {
             let body = '';
             response.setEncoding('utf8');
             response.on('data', chunk => {
                 body += chunk;
+            });
+            response.on('error', error => {
+                reject(new Error(`rawRequest response failed for ${target}: ${error.message}`));
+            });
+            response.on('aborted', () => {
+                reject(new Error(`rawRequest response aborted by the server for ${target}`));
             });
             response.on('end', () =>
                 resolve({
@@ -37,13 +44,11 @@ const rawRequest = ({host, port, path, headers = {}, method = 'GET'}) =>
         });
 
         request.setTimeout(REQUEST_TIMEOUT_MS, () => {
-            request.destroy(
-                new Error(`rawRequest timed out after ${REQUEST_TIMEOUT_MS}ms: ${method} http://${host}:${port}${path}`)
-            );
+            request.destroy(new Error(`rawRequest timed out after ${REQUEST_TIMEOUT_MS}ms: ${target}`));
         });
 
         request.on('error', error => {
-            reject(new Error(`rawRequest failed for ${method} http://${host}:${port}${path}: ${error.message}`));
+            reject(new Error(`rawRequest failed for ${target}: ${error.message}`));
         });
 
         request.end();

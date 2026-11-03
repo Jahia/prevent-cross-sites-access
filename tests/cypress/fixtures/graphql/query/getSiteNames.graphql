@@ -1,0 +1,9 @@
+query getSiteNames($workspace: Workspace!) {
+    jcr(workspace: $workspace) {
+        nodesByQuery(query: "select * from [jnt:virtualsite] where ischildnode('/sites')") {
+            nodes {
+                name
+            }
+        }
+    }
+}

@@ -47,7 +47,7 @@ if (Cypress.browser.family === 'chromium') {
 
 Cypress.on('test:after:run', (test, runnable) => {
     let videoName = Cypress.spec.relative;
-    videoName = videoName.replace('/.cy.*', '').replace('cypress/e2e/', '');
+    videoName = videoName.replace(/\.cy\..*$/, '').replace('cypress/e2e/', '');
     const videoUrl = 'videos/' + videoName + '.mp4';
     addContext({test}, videoUrl);
     if (test.state === 'failed') {
