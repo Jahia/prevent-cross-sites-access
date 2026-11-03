@@ -11,7 +11,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -175,7 +174,7 @@ class CrossSitesFilterPathTest {
     @Test
     @DisplayName("sites path prefix is derived from the JCR constant")
     void sitesPathPart_derivedFromJcrConstant() {
-        assertThat(CrossSitesFilter.SITES_PATH_PART).isEqualTo(JahiaSitesService.SITES_JCR_PATH + "/");
+        assertThat(JahiaSitesService.SITES_JCR_PATH + "/").isEqualTo(CrossSitesFilter.SITES_PATH_PART);
     }
 
     @ParameterizedTest(name = "[{index}] {0}")

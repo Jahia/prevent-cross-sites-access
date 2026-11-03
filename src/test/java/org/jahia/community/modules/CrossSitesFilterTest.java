@@ -230,9 +230,13 @@ class CrossSitesFilterTest {
             "/cms/render/live/en/sites/siteA.default.html/",
             "/cms/render/live/en/sites/siteA/*",
             "/cms/render/live/en/sites/{}acme.fr.default.html",
-            "/cms/render/live/en/sites/{}acme.fr.default.html/"
+            "/cms/render/live/en/sites/{}acme.fr.default.html/",
+            // plain live paths and the SEO short form
+            "/cms/render/live/en/sites/siteA/home.html",
+            "/files/live/sites/siteA/files/a.png",
+            "/en/sites/siteA/home.html"
     })
-    @DisplayName("renderer suffixes (trailing slash, /*) and {} do not hide a foreign site")
+    @DisplayName("live paths, the SEO short form, renderer suffixes (trailing slash, /*) and {} are enforced")
     void doFilter_rendererSuffixes_blocked(String fullPath) throws Exception {
         path(fullPath, null);
         run();
@@ -416,19 +420,6 @@ class CrossSitesFilterTest {
         path(fullPath.substring(0, i), fullPath.substring(i));
         run();
         assertPassed();
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {
-            "/cms/render/live/en/sites/siteA/home.html",
-            "/files/live/sites/siteA/files/a.png",
-            "/en/sites/siteA/home.html"
-    })
-    @DisplayName("live paths and the SEO short form are enforced")
-    void doFilter_livePath_blocked(String fullPath) throws Exception {
-        path(fullPath, null);
-        run();
-        assertBlocked();
     }
 
     @Test
