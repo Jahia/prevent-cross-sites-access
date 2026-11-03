@@ -11,11 +11,22 @@
     <name>Prevent Cross Sites Access</name>
     <version>1.0.1-SNAPSHOT</version>
     <packaging>bundle</packaging>
-    <description>This is the custom module (prevent-cross-sites-access) for running on a Jahia server.</description>
+    <description>Jahia servlet filter that answers 404 when a request addresses the live content of one site over a hostname mapped to another site.</description>
+
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
     <properties>
         <jahia.plugin.version>6.9</jahia.plugin.version>
         <jahia-module-type>system</jahia-module-type>
+        <junit.version>5.14.4</junit.version>
+        <mockito.version>5.23.0</mockito.version>
+        <assertj.version>3.27.7</assertj.version>
     </properties>
 
     <scm>
@@ -50,8 +61,41 @@
         </snapshotRepository>
     </distributionManagement>
 
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
     <build>
         <plugins>
+            <plugin>
+                <!-- The parent pins an old Surefire that silently runs no JUnit 5 test. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.4</version>
+            </plugin>
             <plugin>
                 <groupId>org.apache.felix</groupId>
                 <artifactId>maven-bundle-plugin</artifactId>
