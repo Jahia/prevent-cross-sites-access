@@ -31,8 +31,9 @@ Each item below is a bypass of this module's protection. Plain Jahia serves ever
 
 ### Added
 
+- **Second, render-chain layer** (`CrossSitesRenderFilter`, live mode, main resource only). It judges the site Jahia actually resolved for the page and the site the page is rendered for, as the renderer computed them, rather than reading the URL as text. It protects rendered content even against URL spellings the servlet layer does not recognise. A block answers 404 with the hostname's site's error page, as the servlet layer does. The servlet layer remains for files, actions, repository URLs and search parameters, which never reach the render chain.
 - `AGENTS.md`: guidance for an AI agent or maintainer changing the filter, covering layout, commands, the decision contract, change rules, testing rules, measured traps and the open design question.
-- JUnit 5 unit tests: 285 cases in three classes covering site-key extraction, the decision matrix, the authoring-path pattern, hostname normalisation, the search and `jsite` checks, and failure handling. They run in `mvn clean install` and need no Docker.
+- JUnit 5 unit tests: 308 cases in three classes covering site-key extraction, the decision matrix, the authoring-path pattern, hostname normalisation, the search and `jsite` checks, and failure handling. They run in `mvn clean install` and need no Docker.
 - Cypress end-to-end suite under `tests/`: one spec for intended behaviour (including the documented fail-open on unmapped hostnames) and one for the bypass regressions listed above.
 - Docker-based e2e harness: Dockerfile, `docker-compose.yml`, CI scripts (`ci.build.sh`, `ci.startup.sh`, `ci.postrun.sh`), environment handling (`set-env.sh`, `.env.example`) and provisioning manifests.
 - Module `README.md`: what the module protects, what a blocked visitor sees, what it does not cover, supported versions, upgrade notes and diagnosis steps.
@@ -52,6 +53,7 @@ Each item below is a bypass of this module's protection. Plain Jahia serves ever
 - **An empty site list is a lookup failure** and is logged, instead of passing silently.
 - **Log output:** control, format (bidirectional and zero-width) and line-separator characters are replaced by `?`. Paths and Referer values are capped at 512 characters.
 - **Search parameter check follows Jahia's rules.** Any request carrying a real search-criteria parameter has its scope judged, whether or not Jahia would actually run the search. Unrelated `src_*` parameters are ignored, as Jahia's bean population ignores unknown properties, and blank-only values are ignored. A request with no scope that carries only a search parameter such as the language now returns 404. The rules live in a new package-private `SearchParameterCheck` class.
+- **Repository root and sites folder node** requests are refused by the render layer too, when the page being rendered is one of those nodes.
 - **Released manifest** no longer includes `Jahia-Source-Folders`, which carried the builder's local checkout path. Jahia reads that header only to mount sources in development mode.
 - **Filter registration:** REQUEST and FORWARD dispatches, order 0.5. It runs after the Shiro and JCR session filters and before `UrlRewriteFilter`.
 - **Build parent** moved from `jahia-modules` 8.1.0.0 to 8.2.3.2. The Sonar scan (`mvn clean install sonar:sonar`) now runs on Java 11 with the current scanner.
