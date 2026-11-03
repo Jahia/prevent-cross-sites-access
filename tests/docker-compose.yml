@@ -3,8 +3,8 @@ services:
         image: '${JAHIA_IMAGE}'
         container_name: jahia
         ports:
-            - '8080:8080'
-            - '8000:8000'
+            - '127.0.0.1:8080:8080'
+            - '127.0.0.1:8000:8000'
         environment:
             - SUPER_USER_PASSWORD=${SUPER_USER_PASSWORD}
             - JAHIA_LICENSE=${JAHIA_LICENSE}
