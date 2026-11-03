@@ -49,7 +49,7 @@ Rebuild the jar after every Java change. If you edit a source file after the bui
 
 ## Choosing the Jahia image
 
-The image is selected with `JAHIA_IMAGE`. The current suite has 36 tests (19 in `01`, 17 in `02`). The last recorded green run, on Jahia 8-SNAPSHOT and on 8.2.3.2, passed all 36 tests. Earlier runs also covered 8.2.3.7.
+The image is selected with `JAHIA_IMAGE`. The current suite has 36 tests (19 in `01`, 17 in `02`). The 36-test suite, with both layers active, was green on Jahia 8-SNAPSHOT and on 8.2.3.2. Earlier runs also covered 8.2.3.7.
 
 Use **8.2.3.2 as the reference target**. Jahia core's own `MalformedRequestFilter` is absent there, so double-encoded and non-normalised URLs reach the module, and a green run shows that the module itself refuses them. On 8.2.3.7 and on the 8-SNAPSHOT image that core filter is present and rejects such URLs with 400 before the module runs. The specs still pass there, but for those forms they no longer prove anything about the module. Their assertions are written as properties ("foreign content is not served"), so they hold whichever layer refuses. Run both images when you change the filter: a defect that core masks on a newer image shows up on 8.2.3.2.
 
@@ -110,9 +110,17 @@ The filter logs under `org.jahia.community.modules.CrossSitesFilter`. With the c
 docker logs jahia 2>&1 | grep CrossSitesFilter
 ```
 
-The filter logs one INFO line when it activates (`Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]`). If that line is absent and the logger is at INFO or finer, the filter is not active, and a green run would prove nothing.
+Each layer logs one INFO line when it activates: `Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]` for the servlet layer, and `Cross-site access render filter active: priority -10.0, live mode, main resource only` for the render layer. If one of these lines is absent and the logger is at INFO or finer, that layer is not active, and a green run would prove nothing for it.
 
-Blocked requests appear at INFO, in three forms: `Blocked cross-site access: path addresses site ...` for a path, `Blocked cross-site access: path addresses the sites root '/sites' ...` for the `/sites` node itself, and `Blocked cross-site access: parameter '...' selects ...` for a request parameter. Both end with `referer: <value>`, or `referer: -` when no Referer header was sent. The DEBUG line for hostnames that map to no site only appears when that logger is raised to DEBUG in Jahia's logging configuration; this suite does not set it. The root README, "Diagnosing a request the module blocked", lists every message and the Karaf commands (`log:get`, `log:set`) that change the level at runtime.
+Blocked requests appear at INFO, in three forms: `Blocked cross-site access: path addresses site ...` for a path, `Blocked cross-site access: path addresses the sites root '/sites' ...` for the `/sites` node itself, and `Blocked cross-site access: parameter '...' selects ...` for a request parameter. The render layer's line has the form `Blocked cross-site access (render layer): main resource resolves to <target> but hostname '<host>' maps to site '<site>', main resource: <path>, referer: ...`. The servlet layer's lines carry no layer name. Every block line ends with `referer: <value>`, or `referer: -` when no Referer header was sent. The DEBUG line for hostnames that map to no site only appears when that logger is raised to DEBUG in Jahia's logging configuration; this suite does not set it. The root README, "Diagnosing a request the module blocked", lists every message and the Karaf commands (`log:get`, `log:set`) that change the level at runtime.
+
+## The two layers and the suite
+
+The suite runs with both layers active. The servlet filter (layer 1) and the render filter (layer 2) both answer every request; no spec disables either. The two layers are described in the root README, "Two layers".
+
+What the suite can and cannot separate: a test passes when the response is withheld, and it does not record which layer withheld it. The log lines do record it: the render layer's block line carries `(render layer)`, and the servlet layer's does not. Read the log to see which layer answered a request.
+
+Two results were measured outside the suite on 8.2.3.2, by switching off layer 1's render checks: layer 2 alone refused every rendered bypass, while a foreign `/files` PDF and a foreign search were stopped only by layer 1. Those surfaces never enter the render chain, so no render-layer test can cover them.
 
 ## How the specs drive the filter
 
@@ -237,6 +245,7 @@ Three classes in `src/test/java/org/jahia/community/modules`:
 - `CrossSitesFilterTest`: the decision matrix with mocked request, response and chain; dispatcher types; log-line sanitisation; failure handling for the site list and the hostname lookup, including the WARN and the INFO on recovery.
 - `CrossSitesFilterPathTest`: the site-key resolver, hostname normalisation, the JCR `{}` normalisation and the authoring-path pattern.
 - `CrossSitesFilterParameterTest`: the site-selecting request parameters: `src_*` search scopes (site lists, path properties, unscoped searches), `jsite` identifiers, identifier caching and re-reading after a site is re-created, and failure handling for the identifier lookup.
+- `CrossSitesRenderFilterTest`: the render layer's decision on a main resource: the site it resolves to, the render-context site, the `/` and `/sites` listings, the stand-downs, the block line, and the lookup failure handling.
 
 The `src_*` rules themselves are in the package-private `SearchParameterCheck`, which the parameter tests exercise. They judge every potential search by its scope: a non-blank `src_*` value on a `SearchCriteria` property, read from the class at runtime. They do not mirror Jahia's emptiness rule, which an earlier iteration did and which missed node-property criteria. The `/sites` root check is covered by the path and decision tests.
 

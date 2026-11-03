@@ -41,6 +41,19 @@ If the site identifier cannot be read for `jsite`, the request is let through wi
 - Its order places it after Jahia's Shiro filter (order -3) and the JCR session filter (order -1), and before `UrlRewriteFilter` (order 1). Those orders are defined in jahia-impl's `applicationcontext-basejahiaconfig.xml`, as checked against jahia-impl 8.2.2.1. Nothing in this build verifies them, so they need re-checking when moving to a new Jahia line.
 - When it activates it logs one INFO line naming its order and dispatcher types: `Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]`.
 
+## Two layers
+
+The module has two layers, both in the same bundle.
+
+- **Layer 1, the servlet filter** (`CrossSitesFilter`, order 0.5, REQUEST and FORWARD) reads the URL and the request parameters as strings. It is the only layer that sees `/files`, `/repository`, actions (`*.do`, POST) and search hits: none of those enter the render chain, and search results are printed by a JSP rather than rendered as resources. Its activation line is `Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]`.
+- **Layer 2, the render filter** (`CrossSitesRenderFilter`, priority -10, live mode, main resource only) reads no string. It takes the site of the main resource as Jahia resolved it, and the render-context site, which Jahia sets from the path, the hostname or `jsite`. It refuses when either is another existing site than the hostname's (`systemsite` excepted), and it refuses the main resource `/` (the repository root) and `/sites`, which list every site. Its activation line is `Cross-site access render filter active: priority -10.0, live mode, main resource only`.
+
+Neither value is enough alone: a foreign path shows in the node's site, and `jsite` shows in the render-context site. Layer 2 judges what Jahia resolved, so a new spelling of a path cannot slip past it for rendered pages. Layer 1 stays because it covers what layer 2 never sees. Measured on 8.2.3.2: with layer 1's render checks disabled, layer 2 alone refused every rendered bypass, but a foreign `/files` PDF and a foreign search were stopped only by layer 1.
+
+Content that a page includes (content references, systemsite content) is not checked by layer 2, on purpose: a page legitimately includes systemsite content and references to another site, and only the main resource decides the page.
+
+A block by layer 2 answers 404 through `PathNotFoundException`, which Jahia's error handling turns into the hostname's site's error page, as for layer 1. Measured on 8.2.3.2, that page is byte-identical to a genuine 404 of that site. The block line of layer 2 carries `(render layer)`; layer 1's block lines carry no layer name. Both layers stand down on an unmapped, localhost or empty hostname, during error dispatches, and when a lookup fails (rate-limited WARN).
+
 ## What a visitor sees when blocked
 
 A blocked request receives HTTP 404 and the error page of the site the visitor is on, the site their hostname maps to. The filter sets the request attribute `siteKey` to that site before it sends the 404, and Jahia's error servlet reads that attribute before it resolves the URL (per the maintainers' reading of Jahia's source). The page therefore carries that site's branding and language, and nothing from the blocked site.
@@ -69,10 +82,10 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 
 - **Jahia:** 8.2.3.2 or later. The bundle declares `Jahia-Required-Version: 8.2.3.2` and is built against the `jahia-modules` parent 8.2.3.2. It does not install on earlier Jahia versions.
 - **Java:** the bundle targets Java 11. Build with JDK 11 or later.
-- **Tested end to end** on Jahia 8-SNAPSHOT and 8.2.3.2 for the current change set (all 36 Cypress tests green on both). Earlier measurements, made before the current parent, also covered 8.2.3.7.
+- **Tested end to end** on Jahia 8-SNAPSHOT and 8.2.3.2 for the current change set (all 36 Cypress tests green on both, with both layers active). Earlier measurements, made before the current parent, also covered 8.2.3.7.
 - **Build:** `mvn clean install` at the repository root produces `target/prevent-cross-sites-access-1.0.1-SNAPSHOT.jar`. The unit tests run as part of the build and need no Docker. The tests use Java 11 APIs and Mockito 5. The released manifest does not carry `Jahia-Source-Folders`, so the builder's checkout path is not published (the parent's header is removed in `pom.xml`).
 - **Deploy:** install the jar as any other Jahia 8 module (Module Manager upload, or the modules deploy directory of your installation). No site or module settings are needed.
-- **Disabling:** stop the bundle (`Bundle-Name: Prevent Cross Sites Access`, symbolic name `prevent-cross-sites-access`). There is no other switch.
+- **Disabling:** stop the bundle (`Bundle-Name: Prevent Cross Sites Access`, symbolic name `prevent-cross-sites-access`). Both layers are in this bundle, so stopping it disables both. There is no other switch.
 
 ## Upgrading from 1.0.0
 
@@ -90,6 +103,7 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 - **The `/sites` node itself is blocked on a mapped hostname** (`/sites.html.ajax` and its forms). Whether 1.0.0 served it was not checked for this note.
 - **Error pages are not enforced** (see "What it does NOT cover").
 - **The urlrewrite rule file has been removed.** 1.0.0 used one.
+- **A second layer checks the main resource of each rendered page** (see "Two layers"). A page whose main resource is another site's, or the repository root or the `/sites` node, is refused whichever path spelling reached it. On 8.2.3.2 the repository root rendered 0 bytes unguarded (measured).
 - **Log output changed:**
   - a path block line now names the hostname the server saw (trailing dots removed) and ends with `referer: <value>`, or `referer: -` when the browser sent none;
   - a parameter block line has the form `parameter '<name>' selects <target> but hostname '<host>' maps to site '<site>'`, followed by the path and the referer;
@@ -104,7 +118,7 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 ## Diagnosing a request the module blocked
 
 1. **Get the exact URL and the hostname from whoever reports the problem.** A block is indistinguishable from a missing page for the visitor, so a description such as "the page does not load" is not enough.
-2. **Check that the filter is active.** Run `log:get org.jahia.community.modules.CrossSitesFilter` in the Karaf console. The filter is active if the INFO line `Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]` appears in the log after the module started. If the logger is at INFO or finer and that line is missing, the filter is not active.
+2. **Check that the filter is active.** Run `log:get org.jahia.community.modules.CrossSitesFilter` in the Karaf console. The filter is active if the INFO line `Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]` appears in the log after the module started, and the render layer's line `Cross-site access render filter active: priority -10.0, live mode, main resource only` appears as well. If the logger is at INFO or finer and that line is missing, the filter is not active.
 3. **Find the block line.** Logger `org.jahia.community.modules.CrossSitesFilter`, one line per blocked request. A path block has this form:
 
    ```
@@ -119,13 +133,21 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 
    `<target>` is `site 'Z'` for a site key, `site node '<uuid>'` for `jsite`, or `every site (...)` for a search with no scope or with a scope that covers every site. A path that addresses the `/sites` node itself reads `path addresses the sites root '/sites' but hostname 'H' maps to site 'Y'`.
 
+   A render-layer block has this form:
+
+   ```
+   Blocked cross-site access (render layer): main resource resolves to <target> but hostname 'H' maps to site 'Y', main resource: <path>, referer: <referer or ->
+   ```
+
+   `<target>` is `site 'Z'` for the site of the main resource, `render-context site 'Z'` for the site Jahia rendered in, or `every site (the node '/')` or `every site (the node '/sites')` for the two listings.
+
    `X` is the site the URL addresses, `Y` the site the request's hostname maps to, and `H` the hostname the server saw, with trailing dots removed. The path is the decoded form. Control, format and line-separator characters are replaced by `?`; a path or referer longer than 512 characters is cut and followed by `…`. The referer is the page that linked to the blocked URL or issued the search, which is usually the page to fix.
 4. **Jahia's `ErrorLoggingFilter` logs the 404 separately.** Use it to correlate the request.
 5. **Check the hostname.** Compare `Y` with the `j:serverName` of site `Y`, and `H` with the `Host` value the server actually receives (a reverse proxy may rewrite it).
 6. **Check the link or the search.** A page of site `Y` that references live content under `/sites/X/...` is refused by design. Such references must point at `X`'s own hostname. Shared content should live in `systemsite`, which is exempt. A search form on site `Y` that selects another site is refused by design; the site's own search form sends its own site. A criterion without any scope, such as `src_languages` alone, is refused too.
 7. **No "Blocked" line but a 404:** if the logger is at INFO or finer (step 2), this module did not block the request. The 404 comes from Jahia (unknown key, unknown site, or an ordinary missing page). If the logger is above INFO, the absence of the line proves nothing: raise the level as in step 8 and repeat the request.
 8. **Raise the logger only while diagnosing.** In the Karaf console, run `log:set DEBUG org.jahia.community.modules.CrossSitesFilter`, and restore it with `log:set INFO org.jahia.community.modules.CrossSitesFilter` (or the level `log:get` showed before). At DEBUG, each request whose hostname maps to no site logs `Hostname '<host>' maps to no site, cross-site check skipped`. Hostnames `localhost` and empty ones are not looked up and are not logged. The line is written per request.
-9. **WARN "letting requests through unchecked":** the site list, the hostname lookup, or the site-identifier lookup failed, so the protection is off for requests in that state. The WARN is logged when the failure starts and then at most every 10 minutes while it lasts; the exception is attached to the WARN when there is one. An INFO "recovered" line follows when the lookup works again. Check the repository and database health.
+9. **WARN "letting requests through unchecked":** the site list, the hostname lookup, the site-identifier lookup, or the site of the main resource failed, so the protection is off for requests in that state. The WARN is logged when the failure starts and then at most every 10 minutes while it lasts; the exception is attached to the WARN when there is one. An INFO "recovered" line follows when the lookup works again. Check the repository and database health.
 10. **Unmapped hostnames are silent by default.** A request to a bare IP, an internal load-balancer name or `localhost` is not checked and is not logged at INFO.
 
 ## Developers
@@ -138,7 +160,7 @@ Unit tests (JUnit 5, JDK 11 or later, no Docker needed):
 mvn clean install
 ```
 
-The JUnit tests cover what HTTP cannot observe, since a block and an unknown site key both answer 404: the site-key resolver, the `/sites` node check, the decision matrix, the authoring-path pattern, hostname normalisation, the site-selecting request parameters (`SearchParameterCheck` and `jsite`), and failure handling.
+The JUnit tests cover what HTTP cannot observe, since a block and an unknown site key both answer 404: the site-key resolver, the `/sites` node check, the decision matrix, the authoring-path pattern, hostname normalisation, the site-selecting request parameters (`SearchParameterCheck` and `jsite`), the render layer's decision, and failure handling.
 
 SonarQube analysis: `mvn clean install sonar:sonar` works as it is on Java 11. The parent brings `sonar-maven-plugin` 5.6.0, which provisions its own Java runtime.
 
