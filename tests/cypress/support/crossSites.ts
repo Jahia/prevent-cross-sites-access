@@ -64,14 +64,15 @@ export const rawGet = (
     path: string,
     host: string,
     extraHeaders: Record<string, string> = {}
-): Cypress.Chainable<RawResponse> => cy.task<RawResponse>('rawRequest', {
-    host: JAHIA_HOST,
-    port: JAHIA_PORT,
-    path,
-    // Port included so the Host header matches what a browser would send; getServerName()
-    // strips it again, which is the only part the filter's site lookup consumes.
-    headers: {Host: `${host}:${JAHIA_PORT}`, ...extraHeaders}
-});
+): Cypress.Chainable<RawResponse> =>
+    cy.task<RawResponse>('rawRequest', {
+        host: JAHIA_HOST,
+        port: JAHIA_PORT,
+        path,
+        // Port included so the Host header matches what a browser would send; getServerName()
+        // strips it again, which is the only part the filter's site lookup consumes.
+        headers: {Host: `${host}:${JAHIA_PORT}`, ...extraHeaders}
+    });
 
 /** Points a hostname at {@link SITE_KEY}. */
 export const setSiteServerName = (serverName: string): void => {
@@ -100,15 +101,13 @@ export const ensureForeignSite = (): void => {
         });
         publishAndWaitJobEnding(FOREIGN_SITE_PATH, ['en']);
 
-        cy.waitUntil(
-            () => rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).then(live => live.status === 200),
-            {
-                timeout: SITE_CREATION_TIMEOUT_MS,
-                interval: 2000,
-                errorMsg: `Site ${FOREIGN_SITE_KEY} never served ${foreignRenderUrl} on its own hostname; ` +
-                    'without content there the cross-site assertions could not tell a block from an empty site'
-            }
-        );
+        cy.waitUntil(() => rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).then(live => live.status === 200), {
+            timeout: SITE_CREATION_TIMEOUT_MS,
+            interval: 2000,
+            errorMsg:
+                `Site ${FOREIGN_SITE_KEY} never served ${foreignRenderUrl} on its own hostname; ` +
+                'without content there the cross-site assertions could not tell a block from an empty site'
+        });
     });
 };
 
@@ -120,15 +119,13 @@ export const ensureForeignSite = (): void => {
  * site is rejected on {@link SITE_SERVER_NAME}, the mapping has taken effect.
  */
 export const waitForMappingToApply = (): void => {
-    cy.waitUntil(
-        () => rawGet(foreignRenderUrl, SITE_SERVER_NAME).then(response => response.status === 400),
-        {
-            timeout: MAPPING_TIMEOUT_MS,
-            interval: 1000,
-            errorMsg: `Site ${SITE_KEY} never became reachable as ${SITE_SERVER_NAME}; ` +
-                'CrossSitesFilter is not enforcing, so the suite would pass vacuously'
-        }
-    );
+    cy.waitUntil(() => rawGet(foreignRenderUrl, SITE_SERVER_NAME).then(response => response.status === 400), {
+        timeout: MAPPING_TIMEOUT_MS,
+        interval: 1000,
+        errorMsg:
+            `Site ${SITE_KEY} never became reachable as ${SITE_SERVER_NAME}; ` +
+            'CrossSitesFilter is not enforcing, so the suite would pass vacuously'
+    });
 };
 
 /** Logs in and returns the session cookie, for requests that must be authenticated. */
@@ -137,7 +134,9 @@ export const sessionCookieHeader = (): Cypress.Chainable<Record<string, string>>
     cy.visit('/jahia/dashboard');
     return cy.getCookie('JSESSIONID').then(cookie => {
         if (!cookie) {
-            throw new Error('No JSESSIONID after login; the authenticated assertions below would silently run as guest');
+            throw new Error(
+                'No JSESSIONID after login; the authenticated assertions below would silently run as guest'
+            );
         }
 
         return {Cookie: `JSESSIONID=${cookie.value}`};

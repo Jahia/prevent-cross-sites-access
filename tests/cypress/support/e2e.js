@@ -22,10 +22,7 @@ import {jsErrorsLogger} from '@jahia/cypress';
 // Enable and attach JS Errors Logger
 jsErrorsLogger.enable();
 // Define allowed JS warnings to ignore them in the logs
-jsErrorsLogger.setAllowedJsWarnings([
-    'Unsatisfied version',
-    'No satisfying version'
-]);
+jsErrorsLogger.setAllowedJsWarnings(['Unsatisfied version', 'No satisfying version']);
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 require('cypress-terminal-report/src/installLogsCollector')();
@@ -54,7 +51,9 @@ Cypress.on('test:after:run', (test, runnable) => {
     const videoUrl = 'videos/' + videoName + '.mp4';
     addContext({test}, videoUrl);
     if (test.state === 'failed') {
-        const screenshot = `screenshots/${Cypress.spec.relative.replace('cypress/e2e/', '')}/${runnable.parent.title} -- ${test.title} (failed).png`;
+        const screenshot = `screenshots/${Cypress.spec.relative.replace('cypress/e2e/', '')}/${
+            runnable.parent.title
+        } -- ${test.title} (failed).png`;
         addContext({test}, screenshot);
     }
 });

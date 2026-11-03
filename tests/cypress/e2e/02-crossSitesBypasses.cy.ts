@@ -42,10 +42,11 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
 
     before(() => {
         cy.login();
-        cy.apollo({query: getSiteServerName, variables: {path: SITE_PATH}})
-            .then((result: {data?: {jcr?: {nodeByPath?: {serverName?: {value: string}}}}}) => {
+        cy.apollo({query: getSiteServerName, variables: {path: SITE_PATH}}).then(
+            (result: {data?: {jcr?: {nodeByPath?: {serverName?: {value: string}}}}}) => {
                 originalServerName = result?.data?.jcr?.nodeByPath?.serverName?.value || 'localhost';
-            });
+            }
+        );
         ensureForeignSite();
         setSiteServerName(SITE_SERVER_NAME);
         waitForMappingToApply();
@@ -88,7 +89,7 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
         rawGet(path, SITE_SERVER_NAME).its('status').should('not.eq', 400);
     });
 
-    it('leaves every one of those forms working on the site\'s own hostname', () => {
+    it("leaves every one of those forms working on the site's own hostname", () => {
         // The other half of each fix: none of the above may cost the foreign site access to its
         // own content. A filter that answered 400 everywhere would pass all four tests above.
         // Two of these URLs are 404 on their own hostname - that is Jahia declining to render a

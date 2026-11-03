@@ -36,10 +36,11 @@ describe('CrossSitesFilter - enforcement', () => {
 
     before(() => {
         cy.login();
-        cy.apollo({query: getSiteServerName, variables: {path: SITE_PATH}})
-            .then((result: {data?: {jcr?: {nodeByPath?: {serverName?: {value: string}}}}}) => {
+        cy.apollo({query: getSiteServerName, variables: {path: SITE_PATH}}).then(
+            (result: {data?: {jcr?: {nodeByPath?: {serverName?: {value: string}}}}}) => {
                 originalServerName = result?.data?.jcr?.nodeByPath?.serverName?.value || 'localhost';
-            });
+            }
+        );
         ensureForeignSite();
         setSiteServerName(SITE_SERVER_NAME);
         waitForMappingToApply();
@@ -50,27 +51,25 @@ describe('CrossSitesFilter - enforcement', () => {
         setSiteServerName(originalServerName);
     });
 
-    it('serves the second site\'s content on its own hostname', () => {
+    it("serves the second site's content on its own hostname", () => {
         // The calibration for everything below: this content is reachable, so a 400 on another
         // hostname is the filter withholding it rather than Jahia failing to find it.
         rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).its('status').should('eq', 200);
     });
 
-    it('rejects another site\'s content requested over the mapped hostname', () => {
+    it("rejects another site's content requested over the mapped hostname", () => {
         rawGet(foreignRenderUrl, SITE_SERVER_NAME).its('status').should('eq', 400);
     });
 
-    it('rejects another site\'s files requested over the mapped hostname', () => {
+    it("rejects another site's files requested over the mapped hostname", () => {
         rawGet(foreignFileUrl, SITE_SERVER_NAME).its('status').should('eq', 400);
     });
 
-    it('serves the mapped site\'s own content exactly as it would with no filter in play', () => {
+    it("serves the mapped site's own content exactly as it would with no filter in play", () => {
         // Self-calibrating: whatever the unguarded answer is (200 when digitall's home page is
         // published, 404 when it is not), the filter must not change it for the site's own host.
         rawGet(ownRenderUrl, UNMAPPED_SERVER_NAME).then(unguarded => {
-            rawGet(ownRenderUrl, SITE_SERVER_NAME)
-                .its('status')
-                .should('eq', unguarded.status);
+            rawGet(ownRenderUrl, SITE_SERVER_NAME).its('status').should('eq', unguarded.status);
         });
     });
 
@@ -129,9 +128,7 @@ describe('CrossSitesFilter - enforcement', () => {
             // The regression that would hurt most: the filter runs after Shiro but ignores the
             // authenticated user, so a mistake here locks authors out of their own site.
             sessionCookieHeader().then(headers => {
-                rawGet(ownEditUrl, SITE_SERVER_NAME, headers)
-                    .its('status')
-                    .should('not.eq', 400);
+                rawGet(ownEditUrl, SITE_SERVER_NAME, headers).its('status').should('not.eq', 400);
             });
         });
 
@@ -139,9 +136,7 @@ describe('CrossSitesFilter - enforcement', () => {
             // Confirms the control is authentication-blind by design: holding a session, even
             // root's, does not exempt a request.
             sessionCookieHeader().then(headers => {
-                rawGet(foreignRenderUrl, SITE_SERVER_NAME, headers)
-                    .its('status')
-                    .should('eq', 400);
+                rawGet(foreignRenderUrl, SITE_SERVER_NAME, headers).its('status').should('eq', 400);
             });
         });
     });
