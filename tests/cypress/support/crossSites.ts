@@ -1,6 +1,6 @@
 import {DocumentNode} from 'graphql';
 import gql from 'graphql-tag';
-import {createSite, editSite, publishAndWaitJobEnding, uploadFile} from '@jahia/cypress';
+import {createSite, deleteNode, editSite, publishAndWaitJobEnding, uploadFile} from '@jahia/cypress';
 
 /**
  * Shared fixtures and assertion helpers for the CrossSitesFilter suites.
@@ -45,15 +45,31 @@ export const FOREIGN_TEMPLATE_SET = 'dx-base-demo-templates';
 export const foreignRenderUrl = `/cms/render/live/en${FOREIGN_SITE_PATH}/home.html`;
 
 /**
- * A file the suite uploads to the foreign site (fixture `cypress/fixtures/crossSitesProbe.txt`),
- * so that file URLs have real content to withhold. A fresh site has no files of its own.
+ * Files the suite uploads (all from the fixture `cypress/fixtures/crossSitesProbe.txt`), so that
+ * file URLs have real content to withhold or to serve. A fresh site has no files of its own.
  */
 const PROBE_FIXTURE = 'crossSitesProbe.txt';
 const PROBE_NAME = 'crossSitesProbe.txt';
+const SHARED_PROBE_NAME = 'crossSitesSharedProbe.txt';
 const FOREIGN_FILES_PATH = `${FOREIGN_SITE_PATH}/files`;
 const FOREIGN_PROBE_PATH = `${FOREIGN_FILES_PATH}/${PROBE_NAME}`;
+const SHARED_FILES_PATH = '/sites/systemsite/files';
 export const foreignFileUrl = `/files/live${FOREIGN_PROBE_PATH}`;
 export const foreignDefaultFileUrl = `/files/default${FOREIGN_PROBE_PATH}`;
+/** Path of the probe file the foreign site holds, as a function of how its key is spelled. */
+export const foreignFileUrlWithKey = (key: string): string => `/files/live/sites/${key}/files/${PROBE_NAME}`;
+/** A real file in systemsite, whose content every site may be served. */
+export const sharedFileUrl = `/files/live${SHARED_FILES_PATH}/${SHARED_PROBE_NAME}`;
+
+interface Probe {
+    name: string;
+    folderPath: string;
+    /** Host the live file is checked on: the owning site's own hostname, or any unguarded one. */
+    liveHost: string;
+}
+
+const FOREIGN_PROBE: Probe = {name: PROBE_NAME, folderPath: FOREIGN_FILES_PATH, liveHost: FOREIGN_SERVER_NAME};
+const SHARED_PROBE: Probe = {name: SHARED_PROBE_NAME, folderPath: SHARED_FILES_PATH, liveHost: UNMAPPED_SERVER_NAME};
 
 /**
  * A default-workspace page: a guest is answered 404, only an authenticated user gets 200.
@@ -100,8 +116,19 @@ const findNodes = gql`
 /** Foreign-page fragments derived at runtime by {@link ensureForeignSite}; never hard-coded. */
 let foreignMarkers: string[] = [];
 
-/** Content of the uploaded probe file, read from the fixture by {@link ensureForeignSite}. */
+/** Content of the uploaded probe files, read from the fixture by {@link ensureForeignSite}. */
 let foreignFileMarkers: string[] = [];
+
+/** A static module asset the foreign page references (no /sites/ segment), found by {@link ensureForeignSite}. */
+let staticAssetUrl = '';
+
+export const getStaticAssetUrl = (): string => {
+    if (!staticAssetUrl) {
+        throw new Error('No static asset URL available; call ensureForeignSite() in before() first');
+    }
+
+    return staticAssetUrl;
+};
 
 /** Human-readable description of a request, used in every failure message. */
 export const describeRequest = (path: string, host: string, extraHeaders: Headers = {}): string =>
@@ -153,6 +180,16 @@ export const expectStatus = (
         return response;
     });
 
+/** Asserts `path` is served (200) on `host` with the probe file's content in the body. */
+export const expectFileServed = (path: string, host: string, extraHeaders: Headers = {}): void => {
+    expectStatus(path, host, HTTP_OK, extraHeaders).then(response => {
+        expect(
+            response.body.includes(foreignFileMarkers[0]),
+            `${describeRequest(path, host, extraHeaders)} -> 200 but the body lacks the probe file content`
+        ).to.eq(true);
+    });
+};
+
 /** Asserts the foreign page is genuinely served (200 and carrying the derived markers) on `host`. */
 export const expectForeignContentServed = (path: string, host: string, extraHeaders: Headers = {}): void => {
     expectStatus(path, host, HTTP_OK, extraHeaders).then(response => {
@@ -198,6 +235,25 @@ export const expectNotBlocked = (
             response.status,
             `${describeRequest(path, host, extraHeaders)} -> 404 equals a block; the comparison proves nothing`
         ).to.not.eq(HTTP_NOT_FOUND);
+    });
+};
+
+/**
+ * Authoring URLs are not enforced: `host` must get exactly what `baselineHost` gets (status, and no
+ * foreign content in the body), whatever that status is. Meant for guests, where the answer is a
+ * 404 or a redirect on both hosts.
+ */
+export const expectSameAsOwnHostWithoutLeak = (
+    path: string,
+    host: string,
+    baselineHost: string,
+    extraHeaders: Headers = {}
+): void => {
+    expectSameStatusAs(path, host, baselineHost, extraHeaders).then(response => {
+        expectNoForeignContent(response, describeRequest(path, host, extraHeaders), [
+            ...getMarkers(),
+            ...foreignFileMarkers
+        ]);
     });
 };
 
@@ -248,6 +304,34 @@ export const expectNotServed = (path: string, host: string, extraHeaders: Header
     });
 };
 
+/**
+ * Positive-control variant for URL forms the platform may refuse itself (it differs by Jahia
+ * version). Requests the URL on an unguarded host: when the platform serves the foreign content
+ * there, the mapped host MUST withhold it (404, no markers); when the platform refuses it, that is
+ * logged and the property "foreign content not served" is kept.
+ */
+export const expectWithheldWhereServed = (path: string, host: string): void => {
+    rawGet(path, UNMAPPED_SERVER_NAME).then(control => {
+        const servedByPlatform = control.status === HTTP_OK && getMarkers().some(m => control.body.includes(m));
+        if (!servedByPlatform) {
+            cy.log(
+                `Platform itself refuses ${describeRequest(path, UNMAPPED_SERVER_NAME)} (${control.status}); ` +
+                    'asserting only that foreign content is not served'
+            );
+            expectNotServed(path, host);
+            return;
+        }
+
+        rawGet(path, host).then(response => {
+            const request = describeRequest(path, host);
+            expect(response.status, `${request} -> expected 404; the unguarded host serves the foreign page`).to.eq(
+                HTTP_NOT_FOUND
+            );
+            expectNoForeignContent(response, request);
+        });
+    });
+};
+
 /** Points a hostname at {@link SITE_KEY}. */
 export const setSiteServerName = (serverName: string): void => {
     editSite(SITE_KEY, {serverName});
@@ -267,6 +351,13 @@ export const readSiteServerName = (): Cypress.Chainable<string> => {
                 throw new Error(
                     `Cannot read j:serverName of ${SITE_PATH} (${JSON.stringify(result?.errors || result?.data)}); ` +
                         'refusing to continue, as after() could not restore it'
+                );
+            }
+
+            if (value === SITE_SERVER_NAME) {
+                throw new Error(
+                    `${SITE_PATH} already has j:serverName '${SITE_SERVER_NAME}': an earlier run aborted before ` +
+                        'its after() restored the original. Reset j:serverName by hand (e.g. to localhost) and rerun'
                 );
             }
 
@@ -304,56 +395,70 @@ const deriveMarkers = (page: string, notFoundPage: string): string[] => {
     return markers.filter(marker => !notFoundPage.includes(marker));
 };
 
-const probeExists = (workspace: 'EDIT' | 'LIVE'): Cypress.Chainable<boolean> =>
+const probeExists = (workspace: 'EDIT' | 'LIVE', probe: Probe): Cypress.Chainable<boolean> =>
     cy
         .apollo({
             query: findNodes,
             variables: {
                 workspace,
-                query: `select * from [jnt:file] where ischildnode('${FOREIGN_FILES_PATH}') and localname() = '${PROBE_NAME}'`
+                query: `select * from [jnt:file] where ischildnode('${probe.folderPath}') and localname() = '${probe.name}'`
             }
         })
         .then((result: JcrResult<{jcr?: {nodesByQuery?: {nodes?: unknown[]}}}>) => {
             const nodes = result?.data?.jcr?.nodesByQuery?.nodes;
             if (!nodes) {
-                throw new Error(`Cannot look up ${FOREIGN_PROBE_PATH} in ${workspace}: ${JSON.stringify(result)}`);
+                throw new Error(
+                    `Cannot look up ${probe.folderPath}/${probe.name} in ${workspace}: ${JSON.stringify(result)}`
+                );
             }
 
             return nodes.length > 0;
         });
 
-/** Uploads and publishes the probe file where missing, then waits until /files/live serves it. */
-const ensureProbeFile = (): void => {
-    probeExists('EDIT').then(inEdit => {
-        if (!inEdit) {
-            cy.log(`Uploading ${FOREIGN_PROBE_PATH}`);
-            uploadFile(PROBE_FIXTURE, FOREIGN_FILES_PATH, PROBE_NAME, 'text/plain');
-        }
-    });
-    probeExists('LIVE').then(inLive => {
-        if (!inLive) {
-            publishAndWaitJobEnding(FOREIGN_PROBE_PATH, ['en']);
-        }
-    });
-    cy.fixture(PROBE_FIXTURE).then((content: string) => {
-        foreignFileMarkers = [content.trim()];
-    });
+/**
+ * Makes sure `probe` is live with the fixture's exact content: when /files/live does not serve it
+ * (missing, unpublished or stale), it is replaced, uploaded again and published; then waits for 200.
+ */
+const ensureProbeFile = (probe: Probe): void => {
+    const path = `${probe.folderPath}/${probe.name}`;
+    const liveUrl = `/files/live${path}`;
 
-    let lastStatus = 'none';
-    cy.waitUntil(
-        () =>
-            rawGet(foreignFileUrl, FOREIGN_SERVER_NAME).then(response => {
-                lastStatus = String(response.status);
-                return response.status === HTTP_OK && response.body.includes(foreignFileMarkers[0]);
-            }),
-        {
-            timeout: SITE_CREATION_TIMEOUT_MS,
-            interval: 2000,
-            errorMsg: () =>
-                `${describeRequest(foreignFileUrl, FOREIGN_SERVER_NAME)} last returned ${lastStatus}, wanted 200 ` +
-                'with the probe file content; without it the file assertions would be vacuous'
-        }
-    );
+    cy.fixture(PROBE_FIXTURE).then((content: string) => {
+        const marker = content.trim();
+        foreignFileMarkers = [marker];
+
+        rawGet(liveUrl, probe.liveHost).then(live => {
+            if (live.status === HTTP_OK && live.body.includes(marker)) {
+                return;
+            }
+
+            cy.log(`Uploading ${path} (live returned ${live.status})`);
+            probeExists('EDIT', probe).then(inEdit => {
+                if (inEdit) {
+                    deleteNode(path);
+                }
+
+                uploadFile(PROBE_FIXTURE, probe.folderPath, probe.name, 'text/plain');
+                publishAndWaitJobEnding(path, ['en']);
+            });
+        });
+
+        let lastStatus = 'none';
+        cy.waitUntil(
+            () =>
+                rawGet(liveUrl, probe.liveHost).then(response => {
+                    lastStatus = String(response.status);
+                    return response.status === HTTP_OK && response.body.includes(marker);
+                }),
+            {
+                timeout: SITE_CREATION_TIMEOUT_MS,
+                interval: 2000,
+                errorMsg: () =>
+                    `${describeRequest(liveUrl, probe.liveHost)} last returned ${lastStatus}, wanted 200 ` +
+                    'with the probe file content; without it the file assertions would be vacuous'
+            }
+        );
+    });
 };
 
 /**
@@ -387,7 +492,11 @@ export const ensureForeignSite = (): void => {
         }
     });
 
-    ensureProbeFile();
+    // Idempotent on a reused instance: make sure the hostname is the one the suite maps from.
+    editSite(FOREIGN_SITE_KEY, {serverName: FOREIGN_SERVER_NAME});
+
+    ensureProbeFile(FOREIGN_PROBE);
+    ensureProbeFile(SHARED_PROBE);
 
     let lastHomeStatus = 'none';
     cy.waitUntil(
@@ -412,6 +521,15 @@ export const ensureForeignSite = (): void => {
         const missing = '/cms/render/live/en/sites/no-such-site-for-markers/home.html';
         rawGet(missing, FOREIGN_SERVER_NAME).then(notFound => {
             foreignMarkers = deriveMarkers(page.body, notFound.body);
+            const asset = /\/modules\/[^"'\s<>?)]+\.(?:css|js)/.exec(page.body);
+            if (!asset) {
+                throw new Error(
+                    `No /modules/...css|js reference in ${describeRequest(foreignRenderUrl, FOREIGN_SERVER_NAME)}; ` +
+                        'cannot pick a static asset for the no-/sites/-segment assertion'
+                );
+            }
+
+            staticAssetUrl = asset[0];
             if (foreignMarkers.length === 0) {
                 throw new Error(
                     `No usable marker in ${describeRequest(foreignRenderUrl, FOREIGN_SERVER_NAME)}; ` +
@@ -450,7 +568,7 @@ export const waitForMappingToApply = (): void => {
 
 /**
  * Logs in and returns the session cookie header, after proving the session is authenticated:
- * an edit-mode page answers 200 with the cookie and not 200 without it. (Guests get a JSESSIONID
+ * a default-workspace page answers 200 with the cookie and 404 without it. (Guests get a JSESSIONID
  * too, so the cookie's existence proves nothing.)
  */
 export const sessionCookieHeader = (): Cypress.Chainable<Headers> => {

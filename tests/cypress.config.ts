@@ -2,8 +2,8 @@ import {defineConfig} from 'cypress';
 import fs from 'fs';
 
 // Every assertion in this suite depends on the Host header Jahia sees, so the host is a
-// first-class setting rather than something baked into baseUrl. It must never be
-// localhost/127.0.0.1 - see .env.example for why.
+// first-class setting rather than something baked into baseUrl. JAHIA_HOST is only the TCP
+// target: every assertion sets its own Host header, so even localhost/127.0.0.1 would work.
 const jahiaHost = process.env.JAHIA_HOST || 'jahia';
 const jahiaPort = process.env.JAHIA_PORT || '8080';
 

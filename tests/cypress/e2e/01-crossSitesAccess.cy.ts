@@ -5,6 +5,7 @@ import {
     expectForeignContentServed,
     expectNotBlocked,
     expectNotServed,
+    expectSameAsOwnHostWithoutLeak,
     expectSameStatusAs,
     expectStatus,
     FOREIGN_SERVER_NAME,
@@ -12,6 +13,7 @@ import {
     foreignDefaultFileUrl,
     foreignFileUrl,
     foreignRenderUrl,
+    getStaticAssetUrl,
     readSiteServerName,
     sessionCookieHeader,
     setSiteServerName,
@@ -39,7 +41,6 @@ describe('CrossSitesFilter - enforcement', () => {
     // The frame Page Composer loads to edit a page. /cms/edit/... is no use here: on Jahia 8.2 it
     // redirects everyone, guest included, to /jahia/page-composer/..., whatever the session.
     const ownEditUrl = `/cms/editframe/default/en/sites/${SITE_KEY}/home.html`;
-    const noSiteSegmentUrl = '/cms/render/live/en/no-sites-segment.html';
 
     let originalServerName: string | undefined;
 
@@ -84,15 +85,20 @@ describe('CrossSitesFilter - enforcement', () => {
     });
 
     it("serves the mapped site's own content exactly as it would with no filter in play", () => {
-        // Whatever the unguarded answer is, the filter must not change it for the site's own host,
-        // including via the normalised forms of that host.
-        expectSameStatusAs(ownRenderUrl, SITE_SERVER_NAME);
-        expectSameStatusAs(ownRenderUrl, `${SITE_SERVER_NAME}.`);
-        expectSameStatusAs(ownRenderUrl, SITE_SERVER_NAME.toUpperCase());
+        // The digitall live home page must really be served (200) on its own host, including via the
+        // normalised forms of that host, and the filter must not change the unguarded answer.
+        [SITE_SERVER_NAME, `${SITE_SERVER_NAME}.`, SITE_SERVER_NAME.toUpperCase()].forEach(host => {
+            expectStatus(ownRenderUrl, host, 200);
+            expectSameStatusAs(ownRenderUrl, host);
+        });
     });
 
     it('ignores request paths that carry no /sites/ segment', () => {
-        expectSameStatusAs(noSiteSegmentUrl, SITE_SERVER_NAME);
+        // A URL that EXISTS and has no /sites/ segment: a static module asset the foreign page
+        // references. It must be served (200) on the mapped host just as on the unguarded one.
+        const asset = getStaticAssetUrl();
+        expectStatus(asset, UNMAPPED_SERVER_NAME, 200);
+        expectStatus(asset, SITE_SERVER_NAME, 200);
     });
 
     it('does not block anything when the hostname maps to no site', () => {
@@ -115,16 +121,16 @@ describe('CrossSitesFilter - enforcement', () => {
         });
     });
 
-    it('cannot be bypassed with dot segments (core tripwire: Jahia core rejects them first)', () => {
+    it('cannot be bypassed with dot segments (tripwire on the layer before the module)', () => {
         // On paper this is a bypass: the raw request-target still contains "/sites/digitall/",
         // while the path the renderer resolves has been normalised to the foreign site.
-        // In practice Jahia core's MalformedRequestFilter answers 400 for a non-normalised URI and
-        // for the encoded form, before CrossSitesFilter runs. This test is a tripwire on core, not
-        // on the module.
+        // In practice a layer before the module (Jahia core's MalformedRequestFilter where present)
+        // answers 400 for a non-normalised URI and for the encoded form, before CrossSitesFilter
+        // runs. This test is a tripwire on that layer, not on the module.
         //
         // Over the mapped host the property asserted is "foreign content not served", true on every
         // Jahia version whichever layer refuses. Over an unmapped host the filter cannot act, so
-        // the 400 there is core's; if core stopped screening traversal both would serve content.
+        // the 400 there is the platform's; if it stopped screening traversal both would serve content.
         const dotSegmentUrl = `/cms/render/live/en/sites/${SITE_KEY}/../${FOREIGN_SITE_KEY}/home.html`;
         const encodedDotSegmentUrl = `/cms/render/live/en/sites/${SITE_KEY}/%2e%2e/${FOREIGN_SITE_KEY}/home.html`;
 
@@ -135,17 +141,31 @@ describe('CrossSitesFilter - enforcement', () => {
         expectStatus(encodedDotSegmentUrl, UNMAPPED_SERVER_NAME, 400);
     });
 
+    describe('guests and authoring URLs', () => {
+        [
+            ['default-workspace render', `/cms/render/default/en/sites/${FOREIGN_SITE_KEY}/home.html`],
+            ['edit frame', `/cms/editframe/default/en/sites/${FOREIGN_SITE_KEY}/home.html`],
+            ['default-workspace file', foreignDefaultFileUrl]
+        ].forEach(([label, url]) => {
+            it(`gets on the mapped hostname exactly what it gets on the foreign host for the ${label} URL`, () => {
+                // No session: the authoring exemption must not become a way to read foreign content.
+                // Jahia login and ACLs answer (404 or a redirect) identically on both hosts, no leak.
+                expectSameAsOwnHostWithoutLeak(url, SITE_SERVER_NAME, FOREIGN_SERVER_NAME);
+            });
+        });
+    });
+
     describe('authenticated editors', () => {
         let authHeaders: Record<string, string> = {};
 
         before(() => {
-            // Proves the session is authenticated (edit mode 200 with the cookie, not without).
+            // Proves the session is authenticated (default-workspace page: 200 with the cookie, 404 for a guest).
             sessionCookieHeader().then(headers => {
                 authHeaders = headers;
             });
         });
 
-        it('can still open edit mode for the site on its own hostname', () => {
+        it('can still open the edit frame for the site on its own hostname', () => {
             // The regression that would hurt most: a mistake here locks authors out of their own site.
             expectStatus(ownEditUrl, SITE_SERVER_NAME, 200, authHeaders);
         });
