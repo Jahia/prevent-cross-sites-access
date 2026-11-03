@@ -14,7 +14,7 @@ For administrators:
 - **Only live content is enforced.** Authoring and default-workspace URLs (`/cms/*/default`, `/files/default`, `/files/{workspace}`, `/repository/default`) are no longer blocked; Jahia login and ACLs govern them. An editor can open another site's authoring views from a back-office hostname mapped to a site. A live view of another site stays blocked for every visitor, editors included.
 - **`systemsite` is no longer blocked.** It holds content shared by all sites. Before, shared content failed on every site that referenced it.
 - **The urlrewrite rule file `last-urlrewrite-prevent-cross-sites-access.xml` is removed.** The filter is the only enforcement point, so it no longer depends on a rewrite rule loading.
-- **Site-selecting request parameters are now checked:** `jsite` and the search parameters with the `src_` prefix. A deliberate search across all sites (or with no site scope) made from a hostname mapped to a site now returns 404.
+- **Site-selecting request parameters are now checked:** `jsite` and the search parameters with the `src_` prefix. A search that Jahia would run with a scope beyond the hostname's site (another site, every site, or the whole repository) made from a mapped hostname now returns 404. Unrelated `src_*` parameters and a lone blank site value do not cause a 404.
 
 ### Security
 
@@ -26,16 +26,17 @@ Each item below is a bypass of this module's protection. Plain Jahia serves ever
 - **Trailing-dot hostnames.** A hostname with a trailing dot names the same host but mapped to no site, so the filter stood down. Trailing dots are now removed before the lookup.
 - **JCR expanded-name form `{}name`.** JCR treats an empty-namespace marker on a path segment as the same node. On Jahia 8.2.3.7 a `{}`-prefixed site key was not recognised, and another site's home page was served. The marker is now stripped from each segment before the site is resolved.
 - **Site selection through search parameters.** The `src_` search parameters could select another site's content on the visitor's own search-results page (titles, excerpts, extracted PDF text). Such requests are refused unless every scope stays within the hostname's site or `systemsite`. Scopes that are refused include all sites, a blank site value, a page or file path outside the site, and no scope at all (the whole repository).
+- **Sites folder listing.** A request that addressed the `sites` folder node itself, rather than a site, was not checked. On Jahia 8.2.3.2 that view lists every site's title, server name and top-level nodes, over any hostname. Such requests are now refused on mapped hostnames. Pages that merely contain a `sites` segment under the visitor's own site are unaffected. On Jahia 8-SNAPSHOT the same view renders an empty body.
 - **Site selection through `jsite`.** The `jsite` parameter, which swaps the site used to render a page, could render another site's navigation inside the visitor's page. It is refused unless its identifier is the hostname's site or `systemsite`.
 
 ### Added
 
-- JUnit 5 unit tests: 207 cases in three classes covering site-key extraction, the decision matrix, the authoring-path pattern, hostname normalisation, the search and `jsite` checks, and failure handling. They run in `mvn clean install` and need no Docker.
+- `AGENTS.md`: guidance for an AI agent or maintainer changing the filter, covering layout, commands, the decision contract, change rules, testing rules, measured traps and the open design question.
+- JUnit 5 unit tests: 268 cases in three classes covering site-key extraction, the decision matrix, the authoring-path pattern, hostname normalisation, the search and `jsite` checks, and failure handling. They run in `mvn clean install` and need no Docker.
 - Cypress end-to-end suite under `tests/`: one spec for intended behaviour (including the documented fail-open on unmapped hostnames) and one for the bypass regressions listed above.
 - Docker-based e2e harness: Dockerfile, `docker-compose.yml`, CI scripts (`ci.build.sh`, `ci.startup.sh`, `ci.postrun.sh`), environment handling (`set-env.sh`, `.env.example`) and provisioning manifests.
 - Module `README.md`: what the module protects, what a blocked visitor sees, what it does not cover, supported versions, upgrade notes and diagnosis steps.
 - `tests/README.md`: harness prerequisites, how to choose the Jahia image, and test tables keyed by test title.
-- `AGENTS.md`: guidance for a maintainer or an AI agent changing the module: commands, the rules for changing the filter, testing rules, measured traps and the open design question.
 - Activation log: one INFO line on start with the filter order and dispatcher types.
 - Block log: one INFO line per blocked request giving the addressed site, the hostname's site, the hostname the server saw, the decoded path and the Referer.
 - Diagnostics: a DEBUG line for hostnames that map to no site, and a WARN when the site list or hostname lookup fails. The WARN repeats at most every 10 minutes while the failure lasts, and an INFO line marks recovery.
@@ -50,11 +51,14 @@ Each item below is a bypass of this module's protection. Plain Jahia serves ever
 - **Hostnames with trailing dots** are resolved as the bare hostname.
 - **An empty site list is a lookup failure** and is logged, instead of passing silently.
 - **Log output:** control, format (bidirectional and zero-width) and line-separator characters are replaced by `?`. Paths and Referer values are capped at 512 characters.
+- **Search parameter check follows Jahia's rules.** Only a request on which Jahia would actually run a search is judged. Unrelated `src_*` parameters are ignored, as Jahia's bean population ignores unknown properties, and a lone blank site value is ignored. Every previously blocked form stays blocked when Jahia would run that search. The rules live in a new package-private `SearchParameterCheck` class.
+- **Released manifest** no longer includes `Jahia-Source-Folders`, which carried the builder's local checkout path. Jahia reads that header only to mount sources in development mode.
 - **Filter registration:** REQUEST and FORWARD dispatches, order 0.5. It runs after the Shiro and JCR session filters and before `UrlRewriteFilter`.
 - **Build parent** moved from `jahia-modules` 8.1.0.0 to 8.2.3.2. The Sonar scan (`mvn clean install sonar:sonar`) now runs on Java 11 with the current scanner.
 - **Surefire is pinned to 3.6.0** with `failIfNoTests`, so a build that finds no tests fails instead of passing.
 - **pom:** new description, MIT license declaration and JUnit, Mockito and AssertJ test dependencies.
-- **Dot-segment paths (`..`)** are not parsed by this module. On Jahia 8.2.3.2 they are refused with 400 by a layer that runs before the module; that layer has not been identified and is not Jahia's `MalformedRequestFilter`.
+- **Known limits:** dot-segment paths (`..`) are not parsed by this module. On Jahia 8.2.3.2 they are refused with 400 by a layer that runs before the module; that layer has not been identified and is not Jahia's `MalformedRequestFilter`.
+- **Known over-block:** a top-level path of the form `/<one-segment>/sites.<ext>` is treated as the sites root and refused on a mapped hostname, even when that first segment is not a Jahia servlet.
 
 ### Fixed
 
