@@ -84,7 +84,9 @@ import java.util.regex.Pattern;
  *
  * <p>Order 0.5 is deliberate: after the Shiro filter (-3) and the JCR session filter (-1), which
  * must have run before any site or content lookup, and before the {@code UrlRewriteFilter} (1), so
- * that a foreign path is refused before the rewrite rules or the renderer touch it.
+ * that a foreign path is refused before the rewrite rules or the renderer touch it. Those orders are
+ * defined in jahia-impl's {@code applicationcontext-basejahiaconfig.xml} (checked against 8.2.2.1);
+ * nothing in this build verifies them, so re-check that file when moving to a new Jahia line.
  */
 @Component(service = AbstractServletFilter.class)
 public class CrossSitesFilter extends AbstractServletFilter {
