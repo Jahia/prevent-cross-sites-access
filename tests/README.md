@@ -49,7 +49,7 @@ Rebuild the jar after every Java change. If you edit a source file after the bui
 
 ## Choosing the Jahia image
 
-The image is selected with `JAHIA_IMAGE`. The last recorded run of the current suite (34 tests) was green on Jahia 8-SNAPSHOT and on 8.2.3.2. Earlier runs also covered 8.2.3.7.
+The image is selected with `JAHIA_IMAGE`. The current suite has 36 tests (19 in `01`, 17 in `02`). The last recorded green run, on Jahia 8-SNAPSHOT and on 8.2.3.2, passed all 36 tests. Earlier runs also covered 8.2.3.7.
 
 Use **8.2.3.2 as the reference target**. Jahia core's own `MalformedRequestFilter` is absent there, so double-encoded and non-normalised URLs reach the module, and a green run shows that the module itself refuses them. On 8.2.3.7 and on the 8-SNAPSHOT image that core filter is present and rejects such URLs with 400 before the module runs. The specs still pass there, but for those forms they no longer prove anything about the module. Their assertions are written as properties ("foreign content is not served"), so they hold whichever layer refuses. Run both images when you change the filter: a defect that core masks on a newer image shows up on 8.2.3.2.
 
@@ -155,7 +155,7 @@ Both specs restore `digitall`'s original `j:serverName` in `after()`. Spec 01 ca
 
 ## The two specs
 
-Test titles below are the exact `it()` titles in the spec files, so a failing test can be looked up here by name. Titles built from a loop are written out for each value. The two specs contain 19 and 15 tests.
+Test titles below are the exact `it()` titles in the spec files, so a failing test can be looked up here by name. Titles built from a loop are written out for each value. The two specs contain 19 and 17 tests.
 
 ### `01-crossSitesAccess.cy.ts`: `CrossSitesFilter - enforcement` (19 tests)
 
@@ -197,7 +197,7 @@ The dot-segment test is a tripwire on the layer in front of the module. The unma
 
 Unknown site keys and forms where the site key is the last path segment are not asserted over HTTP: they are 404 whether or not the filter acts. The JUnit tests cover them.
 
-### `02-crossSitesBypasses.cy.ts`: `CrossSitesFilter - former bypasses and false positives` (15 tests)
+### `02-crossSitesBypasses.cy.ts`: `CrossSitesFilter - former bypasses and false positives` (17 tests)
 
 These are regression tests for defects that are fixed, plus one control. Both specs are expected to pass.
 
@@ -210,6 +210,7 @@ These are regression tests for defects that are fixed, plus one control. Both sp
 | The search module's `src_sites.values` selected another site while the path named the visitor's own site | measured on 8-SNAPSHOT: the visitor's own search page returned 21 results from the other site | `blocks a search on the own site that selects another site with src_sites`; also `blocks a search on the own site that adds another site in a comma-separated src_sites` |
 | The renderer's `jsite` swapped the render-context site to another site's node | reproduced on 8-SNAPSHOT: the other site's navigation was rendered inside the visitor's page | `blocks the own site's page rendered with another site's jsite` |
 | The `/sites` node itself (`/sites.html.ajax`, `/sites/.html.ajax`) names no site key, so the path check passed it; on 8.2.3.2 its view lists every site's title, server name and top-level nodes over any hostname (measured live) | the mapped host must not serve the foreign site's markers, see the conditional branch below | `blocks the /sites root listing, which names every site, on a mapped hostname` |
+| Node-property criteria (`src_properties(...)`) start a search, which a list of criteria mirrored from Jahia did not include, so a search with no site scope passed (measured on 8.2.3.2) | `blocks a node-property search on the own site that sets no site scope`; the control is `still serves a node-property search scoped to the own site on its own hostname` |
 | (control) | a filter that blocked everywhere would satisfy every test above | `leaves the encoded form working on the foreign site's own hostname`, with `still serves a search scoped to the own site on its own hostname`, `still serves the own site's page with its own jsite`, and `still serves the own page carrying src_ parameters that start no search` as the matching controls |
 
 The double-encoding test uses `expectWithheldWhereServed()`, so it is a positive control: where the platform serves the URL on an unguarded host, the mapped host must withhold it.
@@ -225,7 +226,7 @@ The `/sites` root test is conditional, because the platform differs. It runs `ex
 
 So on 8-SNAPSHOT the root-listing test proves less than on 8.2.3.2. Run both images before relying on it.
 
-The `src_` control test sends `src_ref=newsletter` and a blank `src_sitesForReferences.values` with a site list on the own page. Both must stay 200, because Jahia runs no search for them.
+The `src_` control test sends `src_ref=newsletter` and a blank `src_sitesForReferences.values` with a site list on the own page. Both must stay 200: `src_ref` is not a `SearchCriteria` property, so the check ignores it, and the other parameter carries blank values only. The title keeps its older wording, from before the current rule.
 
 Forms that cannot be observed over HTTP, since a block is a plain 404, are covered by the JUnit tests.
 
@@ -237,7 +238,7 @@ Three classes in `src/test/java/org/jahia/community/modules`:
 - `CrossSitesFilterPathTest`: the site-key resolver, hostname normalisation, the JCR `{}` normalisation and the authoring-path pattern.
 - `CrossSitesFilterParameterTest`: the site-selecting request parameters: `src_*` search scopes (site lists, path properties, unscoped searches), `jsite` identifiers, identifier caching and re-reading after a site is re-created, and failure handling for the identifier lookup.
 
-The `src_*` rules themselves are in the package-private `SearchParameterCheck`, which the parameter tests exercise. They mirror when Jahia runs a search (`SearchCriteria#isEmpty`), how unknown properties and blank site values are treated, and which scope a search reaches. The `/sites` root check is covered by the path and decision tests.
+The `src_*` rules themselves are in the package-private `SearchParameterCheck`, which the parameter tests exercise. They judge every potential search by its scope: a non-blank `src_*` value on a `SearchCriteria` property, read from the class at runtime. They do not mirror Jahia's emptiness rule, which an earlier iteration did and which missed node-property criteria. The `/sites` root check is covered by the path and decision tests.
 
 ```bash
 (cd .. && mvn clean install)

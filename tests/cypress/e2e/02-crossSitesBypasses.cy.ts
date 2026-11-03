@@ -167,8 +167,9 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
     });
 
     it('still serves the own page carrying src_ parameters that start no search', () => {
-        // Jahia runs no search without a criterion such as a term, and BeanUtils ignores unknown
-        // properties, so neither a tracking tag nor a blank reference list may break the page.
+        // The src_ref tag is not a SearchCriteria property (BeanUtils ignores it, so the filter does), and
+        // a blank-only value is ignored: neither a tracking tag nor a blank reference list may break
+        // the page. Only a real, non-blank search property makes a request a potential search.
         expectStatus(`${foreignRenderUrl}?src_ref=newsletter`, FOREIGN_SERVER_NAME, 200);
         expectStatus(
             `${foreignRenderUrl}?src_sites.values=${FOREIGN_SITE_KEY}&src_sitesForReferences.values=`,
