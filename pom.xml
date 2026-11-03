@@ -96,6 +96,13 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- Test only: Jahia's render classes (Resource, RenderContext) need Guava to be mocked; Jahia 8.2.3.2 ships 33.0.0-jre. -->
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>33.0.0-jre</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <version>${assertj.version}</version>
