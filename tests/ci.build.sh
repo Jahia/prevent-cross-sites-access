@@ -9,12 +9,22 @@ mkdir -p ./artifacts
 # source gets deployed.
 rm -f ./artifacts/*-SNAPSHOT.jar ./artifacts/*-SNAPSHOT.tgz
 
-if ! ls ../target/*-SNAPSHOT.jar >/dev/null 2>&1; then
-  echo "ERROR: no *-SNAPSHOT.jar found in ../target" >&2
+MODULE_JAR=$(ls -t ../target/${MODULE_ID}-*-SNAPSHOT.jar 2>/dev/null | head -n 1 || true)
+if [[ -z "${MODULE_JAR}" ]]; then
+  echo "ERROR: no ${MODULE_ID}-*-SNAPSHOT.jar found in ../target" >&2
   echo "       Build the module first: (cd .. && mvn clean install)" >&2
   exit 1
 fi
-cp ../target/*-SNAPSHOT.jar ./artifacts/
+
+# The jar must be at least as new as the sources it is supposed to contain; otherwise the suite
+# would test an older build and report on code that is no longer there.
+STALE=$(find ../src ../pom.xml -type f -newer "${MODULE_JAR}" 2>/dev/null | head -n 1)
+if [[ -n "${STALE}" ]]; then
+  echo "ERROR: ${STALE} is newer than ${MODULE_JAR}" >&2
+  echo "       The jar is stale. Rebuild the module: (cd .. && mvn clean install)" >&2
+  exit 1
+fi
+cp "${MODULE_JAR}" ./artifacts/
 
 # Everything in ./artifacts gets deployed into Jahia. An empty directory means the suite would
 # boot a Jahia without the module under test and report a green run that proves nothing, so

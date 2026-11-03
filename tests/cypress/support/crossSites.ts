@@ -72,7 +72,8 @@ const FOREIGN_PROBE: Probe = {name: PROBE_NAME, folderPath: FOREIGN_FILES_PATH, 
 const SHARED_PROBE: Probe = {name: SHARED_PROBE_NAME, folderPath: SHARED_FILES_PATH, liveHost: UNMAPPED_SERVER_NAME};
 
 /**
- * A default-workspace page: a guest is answered 404, only an authenticated user gets 200.
+ * A default-workspace page: a guest is answered 404 (measured on every Jahia version tested), only
+ * an authenticated user gets 200.
  * Not /cms/edit/...: on Jahia 8.2 that legacy URL redirects EVERYONE, guest included, to
  * /jahia/page-composer/..., so its status says nothing about the session.
  */
@@ -80,6 +81,7 @@ const AUTH_PROBE_URL = `/cms/render/default/en${SITE_PATH}/home.html`;
 
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
+const HTTP_SERVER_ERROR = 500;
 const SITE_CREATION_TIMEOUT_MS = 180000;
 const MAPPING_TIMEOUT_MS = 30000;
 
@@ -156,11 +158,22 @@ const getMarkers = (): string[] => {
         throw new Error('No foreign-site marker available; call ensureForeignSite() in before() first');
     }
 
-    return foreignMarkers;
+    return assertUsableMarkers(foreignMarkers);
 };
 
+/** Fails loudly on an empty marker: `includes('')` is always true, so it would make a check meaningless. */
+const assertUsableMarkers = (markers: string[]): string[] => {
+    if (markers.length === 0 || markers.some(marker => typeof marker !== 'string' || marker.trim() === '')) {
+        throw new Error(`Unusable marker list ${JSON.stringify(markers)}: markers must be non-blank strings`);
+    }
+
+    return markers;
+};
+
+const getFileMarker = (): string => assertUsableMarkers(foreignFileMarkers)[0];
+
 const expectNoForeignContent = (response: RawResponse, request: string, markers: string[] = getMarkers()): void => {
-    markers.forEach(marker => {
+    assertUsableMarkers(markers).forEach(marker => {
         expect(
             response.body.includes(marker),
             `${request} -> status ${response.status}: body leaks foreign content (found ${JSON.stringify(marker)})`
@@ -184,7 +197,7 @@ export const expectStatus = (
 export const expectFileServed = (path: string, host: string, extraHeaders: Headers = {}): void => {
     expectStatus(path, host, HTTP_OK, extraHeaders).then(response => {
         expect(
-            response.body.includes(foreignFileMarkers[0]),
+            response.body.includes(getFileMarker()),
             `${describeRequest(path, host, extraHeaders)} -> 200 but the body lacks the probe file content`
         ).to.eq(true);
     });
@@ -211,11 +224,13 @@ export const expectSameStatusAs = (
 ): Cypress.Chainable<RawResponse> =>
     rawGet(path, baselineHost, extraHeaders).then(baseline =>
         rawGet(path, host, extraHeaders).then(response => {
-            expect(
-                response.status,
+            const detail =
                 `${describeRequest(path, host, extraHeaders)} -> ${response.status}, but ` +
-                    `${describeRequest(path, baselineHost, extraHeaders)} -> ${baseline.status}`
-            ).to.eq(baseline.status);
+                `${describeRequest(path, baselineHost, extraHeaders)} -> ${baseline.status}`;
+            // A shared 5xx is a failure, not parity.
+            expect(baseline.status, `${detail} (baseline is a server error)`).to.be.lessThan(HTTP_SERVER_ERROR);
+            expect(response.status, `${detail} (server error)`).to.be.lessThan(HTTP_SERVER_ERROR);
+            expect(response.status, detail).to.eq(baseline.status);
             return response;
         })
     );
@@ -257,6 +272,16 @@ export const expectSameAsOwnHostWithoutLeak = (
     });
 };
 
+/** The 404 must be Jahia's rendered error page, not a bare or empty one (e.g. the error page itself re-blocked). */
+const expectRenderedErrorPage = (response: RawResponse, request: string): void => {
+    const contentType = String(response.headers['content-type'] || '');
+    expect(contentType.toLowerCase(), `${request} -> 404 is not text/html (content-type: ${contentType})`).to.include(
+        'text/html'
+    );
+    expect(response.body.trim().length, `${request} -> 404 body is empty`).to.be.greaterThan(0);
+    expect(response.body, `${request} -> 404 body has no <title>; not a rendered error page`).to.match(/<title/i);
+};
+
 /**
  * THE blocked assertion. Proves, in one place, that:
  *   1. the same URL on an unguarded host returns 200 - there was content to withhold;
@@ -277,6 +302,7 @@ export const expectBlocked = (
             expect(response.status, `${request} -> expected 404 (blocked); ${unguarded} serves 200`).to.eq(
                 HTTP_NOT_FOUND
             );
+            expectRenderedErrorPage(response, request);
             expectNoForeignContent(response, request, markers);
             expect(response.body, `${request} -> body identical to the unguarded body`).to.not.eq(baseline.body);
         });
@@ -424,7 +450,7 @@ const ensureProbeFile = (probe: Probe): void => {
     const liveUrl = `/files/live${path}`;
 
     cy.fixture(PROBE_FIXTURE).then((content: string) => {
-        const marker = content.trim();
+        const marker = assertUsableMarkers([content.trim()])[0];
         foreignFileMarkers = [marker];
 
         rawGet(liveUrl, probe.liveHost).then(live => {
@@ -483,6 +509,9 @@ export const ensureForeignSite = (): void => {
             locale: 'en'
         });
     });
+    // Idempotent on a reused instance. Done BEFORE the probes below, which request the site on
+    // FOREIGN_SERVER_NAME: against a stale mapping they would republish or re-upload on every run.
+    editSite(FOREIGN_SITE_KEY, {serverName: FOREIGN_SERVER_NAME});
     // "Published" is judged by the page the suite depends on, not by the site node: createSite()
     // publishes the bare site node itself, so the site is "in live" while its pages are not.
     rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).then(live => {
@@ -491,9 +520,6 @@ export const ensureForeignSite = (): void => {
             publishAndWaitJobEnding(FOREIGN_SITE_PATH, ['en']);
         }
     });
-
-    // Idempotent on a reused instance: make sure the hostname is the one the suite maps from.
-    editSite(FOREIGN_SITE_KEY, {serverName: FOREIGN_SERVER_NAME});
 
     ensureProbeFile(FOREIGN_PROBE);
     ensureProbeFile(SHARED_PROBE);
@@ -581,9 +607,10 @@ export const sessionCookieHeader = (): Cypress.Chainable<Headers> => {
 
         const headers: Headers = {Cookie: `JSESSIONID=${cookie.value}`};
         rawGet(AUTH_PROBE_URL, UNMAPPED_SERVER_NAME).then(guest => {
-            expect(guest.status, `${describeRequest(AUTH_PROBE_URL, UNMAPPED_SERVER_NAME)} without cookie`).to.not.eq(
-                HTTP_OK
-            );
+            expect(
+                guest.status,
+                `${describeRequest(AUTH_PROBE_URL, UNMAPPED_SERVER_NAME)} without cookie: a guest gets 404 (measured)`
+            ).to.eq(HTTP_NOT_FOUND);
         });
         expectStatus(AUTH_PROBE_URL, UNMAPPED_SERVER_NAME, HTTP_OK, headers);
         return cy.wrap(headers);

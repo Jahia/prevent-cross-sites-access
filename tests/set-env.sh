@@ -11,6 +11,8 @@
 ENV_FILE=.env.example
 if [[ -f .env ]]; then
   ENV_FILE=.env
+else
+  echo "NOTE: no .env found, using .env.example (JAHIA_LICENSE will be empty)" >&2
 fi
 
 if [[ ! -f "${ENV_FILE}" ]]; then
