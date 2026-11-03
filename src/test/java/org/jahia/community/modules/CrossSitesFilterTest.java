@@ -7,21 +7,25 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
 import org.slf4j.Logger;
 
 import javax.servlet.FilterChain;
+import javax.servlet.RequestDispatcher;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -29,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -37,7 +41,6 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.LENIENT)
 class CrossSitesFilterTest {
 
     @Mock
@@ -50,6 +53,8 @@ class CrossSitesFilterTest {
     private Logger logger;
 
     private Map<String, String> hostMap;
+    private List<String> lookedUpHosts;
+    private AtomicLong clockMillis;
     private AtomicReference<Supplier<Collection<String>>> sites;
     private CrossSitesFilter filter;
 
@@ -58,9 +63,15 @@ class CrossSitesFilterTest {
         hostMap = new HashMap<>();
         hostMap.put("sitea.example", "siteA");
         hostMap.put("siteb.example", "siteB");
-        sites = new AtomicReference<>(() -> Arrays.asList("siteA", "siteB", "systemsite", "acme.fr"));
-        filter = new CrossSitesFilter(() -> sites.get().get(), host -> hostMap.get(host), logger);
-        when(request.getServerName()).thenReturn("siteb.example");
+        lookedUpHosts = new ArrayList<>();
+        clockMillis = new AtomicLong(1_000);
+        sites = new AtomicReference<>(() -> Arrays.asList("siteA", "siteB", "digitall", "systemsite", "acme.fr"));
+        filter = new CrossSitesFilter(() -> sites.get().get(), host -> {
+            lookedUpHosts.add(host);
+            return hostMap.get(host);
+        }, logger, clockMillis::get);
+        // Not every decision reaches the hostname, so this one stub is allowed to go unused.
+        lenient().when(request.getServerName()).thenReturn("siteb.example");
     }
 
     private void path(String servletPath, String pathInfo) {
@@ -80,6 +91,12 @@ class CrossSitesFilterTest {
     private void assertBlocked() throws Exception {
         verify(response).sendError(HttpServletResponse.SC_NOT_FOUND);
         verify(chain, never()).doFilter(any(), any());
+    }
+
+    private static Supplier<Collection<String>> throwing() {
+        return () -> {
+            throw new IllegalStateException("repo down");
+        };
     }
 
     @Test
@@ -108,21 +125,38 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("a block logs one INFO line naming both sites and the decoded path")
+    @DisplayName("a block logs one INFO line naming both sites, the hostname and the decoded path")
     void doFilter_foreignSite_logsOneInfoLine() throws Exception {
+        when(request.getServerName()).thenReturn("SiteB.Example.");
+        hostMap.put("SiteB.Example", "siteB");
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
-        verify(logger, times(1)).info(contains("siteA"));
-        verify(logger).info(contains("siteB"));
-        verify(logger).info(contains("/cms/render/live/en/sites/siteA/home.html"));
+        assertBlocked();
+        verify(logger, times(1)).info(anyString());
+        verify(logger).info(ArgumentMatchers.argThat((String m) -> m.contains("siteA") && m.contains("siteB")
+                && m.contains("SiteB.Example") && !m.contains("SiteB.Example.")
+                && m.contains("/cms/render/live/en/sites/siteA/home.html")));
     }
 
     @Test
-    @DisplayName("control characters in the decoded path cannot forge log lines")
-    void doFilter_blockedPathWithNewline_isSanitisedInLog() throws Exception {
-        path("/cms/render/live", "/en/sites/siteA/a\r\nFORGED");
+    @DisplayName("line separators, including NEL and U+2028/U+2029, cannot forge log lines")
+    void doFilter_blockedPathWithLineSeparators_isSanitisedInLog() throws Exception {
+        path("/cms/render/live", "/en/sites/siteA/a\r\nb\u0085c d e");
         run();
-        verify(logger).info(org.mockito.ArgumentMatchers.argThat((String m) -> !m.contains("\n") && !m.contains("\r")));
+        assertBlocked();
+        verify(logger).info(ArgumentMatchers.argThat((String m) -> m.chars().noneMatch(
+                c -> c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029)));
+    }
+
+    @Test
+    @DisplayName("the logged path is capped at 512 characters plus an ellipsis")
+    void doFilter_blockedLongPath_isTruncatedInLog() throws Exception {
+        path("/cms/render/live", "/en/sites/siteA/" + "a".repeat(600));
+        run();
+        assertBlocked();
+        verify(logger).info(ArgumentMatchers.argThat((String m) -> m.endsWith("a…")
+                && !m.contains("a".repeat(513))
+                && m.contains("a".repeat(480))));
     }
 
     @Test
@@ -134,9 +168,43 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("already-encoded key (decoded once) is not a site and passes this filter")
+    @DisplayName("percent sign in the key is not decoded here: an existing site named digitall is not addressed")
     void doFilter_percentEncodedKey_isNotASite() throws Exception {
         path("/en", "/sites/%64igitall/home.html");
+        run();
+        assertPassed();
+    }
+
+    @Test
+    @DisplayName("site key case matters: DIGITALL is not digitall")
+    void doFilter_keyInOtherCase_passes() throws Exception {
+        path("/cms/render/live", "/en/sites/DIGITALL/home.html");
+        run();
+        assertPassed();
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}{1}")
+    @org.junit.jupiter.params.provider.CsvSource({
+            "/cms/render/live,/en/sites/{}digitall/home.html",
+            "/cms/render/live,/en/{}sites/digitall/home.html",
+            "/en,/sites/{}digitall/home.html",
+            "/en,/{}sites/digitall/home.html",
+            "/files/live,/sites/{}digitall/files/a.png",
+            "/cms/render/{}default,/en/sites/digitall/home.html",
+            "/cms/{}render/{}live,/en/sites/{}digitall.html"
+    })
+    @DisplayName("JCR's {} empty-namespace marker cannot hide a foreign site")
+    void doFilter_emptyNamespaceMarker_blocked(String servletPath, String pathInfo) throws Exception {
+        path(servletPath, pathInfo);
+        run();
+        assertBlocked();
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @ValueSource(strings = {"/sites/{}{}digitall/home.html", "/sites/{ }digitall/home.html", "/sites/:digitall/home.html"})
+    @DisplayName("forms JCR does not accept as the site are not normalised further")
+    void doFilter_otherMarkerForms_pass(String pathInfo) throws Exception {
+        path("/en", pathInfo);
         run();
         assertPassed();
     }
@@ -150,32 +218,46 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("unmapped hostname passes (documented fail-open)")
-    void doFilter_unmappedHost_passes() throws Exception {
-        when(request.getServerName()).thenReturn("unknown.example");
+    @DisplayName("unmapped hostname passes and the fail-open is logged at DEBUG with the normalised host")
+    void doFilter_unmappedHost_passesAndLogsDebug() throws Exception {
+        when(request.getServerName()).thenReturn("unknown.example.");
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertPassed();
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"localhost", "", "..."})
-    @DisplayName("localhost and empty hostnames pass without any lookup")
-    void doFilter_localhostOrEmpty_passesWithoutLookup(String host) throws Exception {
-        when(request.getServerName()).thenReturn(host);
-        hostMap.put(host, "siteB");
-        path("/cms/render/live", "/en/sites/siteA/home.html");
-        run();
-        assertPassed();
+        verify(logger).debug(contains("unknown.example"));
+        verify(logger, never()).info(anyString());
     }
 
     @Test
-    @DisplayName("null server name passes")
+    @DisplayName("127.0.0.1 is an ordinary host: the lookup decides")
+    void doFilter_ipAddress_lookupDecides() throws Exception {
+        when(request.getServerName()).thenReturn("127.0.0.1");
+        hostMap.put("127.0.0.1", "siteB");
+        path("/cms/render/live", "/en/sites/siteA/home.html");
+        run();
+        assertBlocked();
+        assertThat(lookedUpHosts).containsExactly("127.0.0.1");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"localhost", "localhost.", "", "..."})
+    @DisplayName("localhost and empty hostnames pass without any lookup")
+    void doFilter_localhostOrEmpty_passesWithoutLookup(String host) throws Exception {
+        when(request.getServerName()).thenReturn(host);
+        path("/cms/render/live", "/en/sites/siteA/home.html");
+        run();
+        assertPassed();
+        assertThat(lookedUpHosts).isEmpty();
+    }
+
+    @Test
+    @DisplayName("null server name passes without any lookup")
     void doFilter_nullServerName_passes() throws Exception {
         when(request.getServerName()).thenReturn(null);
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertPassed();
+        assertThat(lookedUpHosts).isEmpty();
     }
 
     @ParameterizedTest
@@ -186,21 +268,18 @@ class CrossSitesFilterTest {
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertBlocked();
+        assertThat(lookedUpHosts).containsExactly("siteb.example");
     }
 
     @Test
     @DisplayName("hostname case is passed through to the case-insensitive lookup untouched")
     void doFilter_upperCaseHost_passedThroughToLookup() throws Exception {
-        AtomicReference<String> seen = new AtomicReference<>();
-        CrossSitesFilter f = new CrossSitesFilter(() -> Arrays.asList("siteA", "siteB"), host -> {
-            seen.set(host);
-            return "siteB";
-        }, logger);
         when(request.getServerName()).thenReturn("SiteB.Example.");
+        hostMap.put("SiteB.Example", "siteB");
         path("/cms/render/live", "/en/sites/siteA/home.html");
-        f.doFilter(request, response, chain);
-        assertThat(seen.get()).isEqualTo("SiteB.Example");
-        verify(response).sendError(404);
+        run();
+        assertBlocked();
+        assertThat(lookedUpHosts).containsExactly("SiteB.Example");
     }
 
     @ParameterizedTest
@@ -212,8 +291,8 @@ class CrossSitesFilterTest {
     })
     @DisplayName("authoring paths pass even for a foreign site")
     void doFilter_authoringPath_passes(String fullPath) throws Exception {
-        int i = fullPath.indexOf("/default");
-        path(fullPath.substring(0, i + "/default".length()), fullPath.substring(i + "/default".length()));
+        int i = fullPath.indexOf("/default") + "/default".length();
+        path(fullPath.substring(0, i), fullPath.substring(i));
         run();
         assertPassed();
     }
@@ -240,7 +319,7 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("null servletPath and pathInfo pass")
+    @DisplayName("null servletPath and pathInfo pass quietly")
     void doFilter_nullPaths_passes() throws Exception {
         path(null, null);
         run();
@@ -265,11 +344,28 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("site-list exception lets the request through and logs WARN once across repeated failures")
+    @DisplayName("does not enforce while Jahia renders an error page")
+    void doFilter_errorDispatch_notEnforced() throws Exception {
+        when(request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE)).thenReturn(404);
+        path("/errors/sites/siteA", "/error.html");
+        run();
+        assertPassed();
+        assertThat(lookedUpHosts).isEmpty();
+    }
+
+    @Test
+    @DisplayName("the same path is enforced when no error status is present")
+    void doFilter_sameSiteLevelErrorPathWithoutErrorStatus_blocked() throws Exception {
+        when(request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE)).thenReturn(null);
+        path("/errors/sites/siteA", "/error.html");
+        run();
+        assertBlocked();
+    }
+
+    @Test
+    @DisplayName("site-list exception passes, WARN once across repeated failures, DEBUG for the rest")
     void doFilter_siteListThrows_passesAndWarnsOnce() throws Exception {
-        sites.set(() -> {
-            throw new IllegalStateException("repo down");
-        });
+        sites.set(throwing());
         path("/cms/render/live", "/en/sites/siteA/home.html");
         for (int i = 0; i < 3; i++) {
             run();
@@ -282,23 +378,37 @@ class CrossSitesFilterTest {
     }
 
     @Test
+    @DisplayName("a long outage warns again at most every ten minutes")
+    void doFilter_siteListKeepsFailing_rewarnsEveryTenMinutes() throws Exception {
+        sites.set(throwing());
+        path("/cms/render/live", "/en/sites/siteA/home.html");
+        run();
+        clockMillis.addAndGet(TimeUnit.MINUTES.toMillis(10) - 1);
+        run();
+        verify(logger, times(1)).warn(anyString(), any(Throwable.class));
+        clockMillis.addAndGet(1);
+        run();
+        verify(logger, times(2)).warn(anyString(), any(Throwable.class));
+        run();
+        verify(logger, times(2)).warn(anyString(), any(Throwable.class));
+        verify(logger, times(2)).debug(anyString(), any(Throwable.class));
+    }
+
+    @Test
     @DisplayName("site-list recovery logs INFO once and re-arms the WARN")
     void doFilter_siteListRecovers_infoOnceThenWarnsAgain() throws Exception {
-        Supplier<Collection<String>> failing = () -> {
-            throw new IllegalStateException("repo down");
-        };
         Supplier<Collection<String>> healthy = () -> Collections.singletonList("siteB");
         path("/cms/render/live", "/en/sites/siteB/home.html");
 
-        sites.set(failing);
+        sites.set(throwing());
         run();
         sites.set(healthy);
         run();
         run();
         assertThat(filter.isSiteListFailing()).isFalse();
-        verify(logger, times(1)).info(contains("recover"));
+        verify(logger, times(1)).info(contains("recovered"));
 
-        sites.set(failing);
+        sites.set(throwing());
         run();
         verify(logger, times(2)).warn(anyString(), any(Throwable.class));
     }
@@ -309,27 +419,21 @@ class CrossSitesFilterTest {
         sites.set(() -> null);
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
-        run();
-        assertPassed2();
+        assertPassed();
         verify(logger, times(1)).warn(anyString());
         assertThat(filter.isSiteListFailing()).isTrue();
     }
 
-    private void assertPassed2() throws Exception {
-        verify(chain, times(2)).doFilter(request, response);
-        verify(response, never()).sendError(any(Integer.class));
-    }
-
     @Test
-    @DisplayName("empty site list passes quietly")
-    void doFilter_siteListEmpty_passesQuietly() throws Exception {
+    @DisplayName("empty site list passes and counts as a failure (Jahia always has systemsite)")
+    void doFilter_siteListEmpty_passesAndWarnsOnce() throws Exception {
         sites.set(Collections::emptyList);
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
-        assertPassed();
-        verify(logger, never()).warn(anyString());
-        verify(logger, never()).warn(anyString(), any(Throwable.class));
-        assertThat(filter.isSiteListFailing()).isFalse();
+        verify(chain).doFilter(request, response);
+        verify(response, never()).sendError(any(Integer.class));
+        verify(logger, times(1)).warn(anyString());
+        assertThat(filter.isSiteListFailing()).isTrue();
     }
 
     @Test
@@ -341,7 +445,7 @@ class CrossSitesFilterTest {
                 throw new JahiaException("x", "y", JahiaException.ERROR_SEVERITY, JahiaException.DATABASE_ERROR);
             }
             return "siteB";
-        }, logger);
+        }, logger, clockMillis::get);
         path("/cms/render/live", "/en/sites/siteA/home.html");
 
         f.doFilter(request, response, chain);
@@ -352,19 +456,22 @@ class CrossSitesFilterTest {
 
         broken.set(false);
         f.doFilter(request, response, chain);
-        verify(logger).info(contains("recover"));
-        verify(response).sendError(404);
+        verify(logger).info(contains("recovered"));
         assertThat(f.isHostLookupFailing()).isFalse();
+        // the recovered request is blocked: sendError, and the chain was not called a third time
+        verify(response).sendError(HttpServletResponse.SC_NOT_FOUND);
+        verify(chain, times(2)).doFilter(any(), any());
     }
 
     @Test
-    @DisplayName("lookup returning null means no site and passes")
+    @DisplayName("lookup returning null means no site and passes without any warning")
     void doFilter_lookupReturnsNull_passes() throws Exception {
         hostMap.clear();
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertPassed();
         verify(logger, never()).warn(anyString(), any(Throwable.class));
-        verify(logger, never()).info(eq("x"));
+        verify(logger, never()).warn(anyString());
+        verify(logger, never()).info(anyString());
     }
 }

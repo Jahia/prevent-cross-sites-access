@@ -130,6 +130,41 @@ class CrossSitesFilterPathTest {
         assertThat(CrossSitesFilter.isAuthoringPath(null)).isFalse();
     }
 
+    @ParameterizedTest(name = "[{index}] {0}")
+    @CsvSource({
+            "/en/sites/{}digitall/home.html,/en/sites/digitall/home.html",
+            "/{}sites/digitall/home.html,/sites/digitall/home.html",
+            "/files/live/sites/{}site/a.png,/files/live/sites/site/a.png",
+            "/a/{}b/{}c,/a/b/c",
+            "/sites/{}{}digitall,/sites/{}digitall",
+            "/sites/{ }digitall,/sites/{ }digitall",
+            "/sites/:digitall,/sites/:digitall",
+            "/sites/digitall{},/sites/digitall{}",
+            "/sites/digitall,/sites/digitall"
+    })
+    @DisplayName("normalizeJcrPath strips one leading {} per segment, as JCR does")
+    void normalizeJcrPath_stripsOneEmptyNamespacePerSegment(String raw, String expected) {
+        assertThat(CrossSitesFilter.normalizeJcrPath(raw)).isEqualTo(expected);
+    }
+
+    @Test
+    @DisplayName("normalizeJcrPath maps null to the empty string")
+    void normalizeJcrPath_null_returnsEmpty() {
+        assertThat(CrossSitesFilter.normalizeJcrPath(null)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("site key matching is case-sensitive, like JCR")
+    void resolveSiteKeyFromPath_differentCase_returnsNull() {
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/SITEA/home.html", SITES)).isNull();
+    }
+
+    @Test
+    @DisplayName("an authoring path hidden behind {} is not authoring")
+    void isAuthoringPath_emptyNamespaceMarker_false() {
+        assertThat(CrossSitesFilter.isAuthoringPath("/cms/render/{}default/en/sites/siteB/home.html")).isFalse();
+    }
+
     @Test
     @DisplayName("sites path prefix is derived from the JCR constant")
     void sitesPathPart_derivedFromJcrConstant() {

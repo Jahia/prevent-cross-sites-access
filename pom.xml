@@ -91,10 +91,15 @@
     <build>
         <plugins>
             <plugin>
-                <!-- The parent pins an old Surefire that silently runs no JUnit 5 test. -->
+                <!-- No parent manages Surefire, so without a version Maven picks whatever it resolves
+                     (and warns that future builds may break). Pinned for a reproducible build.
+                     failIfNoTests: a build that discovers no test must fail, not pass. -->
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.5.4</version>
+                <version>3.6.0</version>
+                <configuration>
+                    <failIfNoTests>true</failIfNoTests>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.felix</groupId>
