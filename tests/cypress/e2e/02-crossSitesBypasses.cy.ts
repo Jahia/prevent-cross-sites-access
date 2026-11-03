@@ -3,6 +3,7 @@ import {
     expectBlocked,
     expectFileBlocked,
     expectFileServed,
+    expectSelectionBlocked,
     expectStatus,
     expectWithheldWhereServed,
     FOREIGN_SERVER_NAME,
@@ -10,8 +11,11 @@ import {
     foreignFileUrlWithKey,
     foreignRenderUrl,
     readSiteServerName,
+    readSiteUuid,
+    searchUrl,
     setSiteServerName,
     sharedFileUrl,
+    SITE_KEY,
     SITE_SERVER_NAME,
     waitForMappingToApply
 } from '../support/crossSites';
@@ -21,6 +25,10 @@ import {
  *
  *   - content disclosure: the filter matched the raw `getRequestURI()` while `Render` resolves
  *     content from the decoded path, so `/%73ites/` handed one site's content to another's host.
+ *   - content disclosure by parameter: a path naming the visitor's own site passed the path check
+ *     while a request parameter selected another site: the search module's `src_sites.values`
+ *     (search results, excerpts and file text of the other site) and the renderer's `jsite`
+ *     (the other site's navigation rendered in the visitor's page).
  *   - availability: `systemsite` holds Jahia's cross-site shared content; treating it as "a
  *     different site" turned shared assets into errors on every site.
  *
@@ -90,6 +98,39 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
         // Treating systemsite as "a different site" made shared media fail on each site using it.
         // A real probe file in /sites/systemsite/files is served, with its content, on the mapped host.
         expectFileServed(sharedFileUrl, SITE_SERVER_NAME);
+    });
+
+    // The parameter cases run the other way round: the path names FOREIGN_SITE_KEY, which is built
+    // from the template set that has a search-results page, on its own hostname FOREIGN_SERVER_NAME,
+    // and the parameter selects SITE_KEY, the site that hostname does not map to.
+    const ownSearchUrl = searchUrl(FOREIGN_SITE_KEY, FOREIGN_SITE_KEY);
+
+    it('blocks a search on the own site that selects another site with src_sites', () => {
+        expectSelectionBlocked(searchUrl(FOREIGN_SITE_KEY, SITE_KEY), ownSearchUrl, FOREIGN_SERVER_NAME);
+    });
+
+    it('blocks a search on the own site that adds another site in a comma-separated src_sites', () => {
+        expectSelectionBlocked(
+            searchUrl(FOREIGN_SITE_KEY, `${FOREIGN_SITE_KEY},${SITE_KEY}`),
+            ownSearchUrl,
+            FOREIGN_SERVER_NAME
+        );
+    });
+
+    it('still serves a search scoped to the own site on its own hostname', () => {
+        expectStatus(ownSearchUrl, FOREIGN_SERVER_NAME, 200);
+    });
+
+    it("blocks the own site's page rendered with another site's jsite", () => {
+        readSiteUuid(SITE_KEY).then(uuid => {
+            expectSelectionBlocked(`${foreignRenderUrl}?jsite=${uuid}`, foreignRenderUrl, FOREIGN_SERVER_NAME);
+        });
+    });
+
+    it("still serves the own site's page with its own jsite", () => {
+        readSiteUuid(FOREIGN_SITE_KEY).then(uuid => {
+            expectStatus(`${foreignRenderUrl}?jsite=${uuid}`, FOREIGN_SERVER_NAME, 200);
+        });
     });
 
     it("leaves the encoded form working on the foreign site's own hostname", () => {

@@ -77,7 +77,7 @@ class CrossSitesFilterTest {
         filter = new CrossSitesFilter(() -> sites.get().get(), host -> {
             lookedUpHosts.add(host);
             return hostMap.get(host);
-        }, logger, clockMillis::get);
+        }, siteKey -> null, logger, clockMillis::get);
         // Not every decision reaches the hostname, so this one stub is allowed to go unused.
         lenient().when(request.getServerName()).thenReturn("siteb.example");
         lenient().when(logger.isInfoEnabled()).thenReturn(true);
@@ -533,7 +533,7 @@ class CrossSitesFilterTest {
                 throw new JahiaException("x", "y", JahiaException.ERROR_SEVERITY, JahiaException.DATABASE_ERROR);
             }
             return "siteB";
-        }, logger, clockMillis::get);
+        }, siteKey -> null, logger, clockMillis::get);
         path("/cms/render/live", "/en/sites/siteA/home.html");
 
         f.doFilter(request, response, chain);

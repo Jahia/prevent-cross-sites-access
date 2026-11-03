@@ -358,6 +358,76 @@ export const expectWithheldWhereServed = (path: string, host: string): void => {
     });
 };
 
+/**
+ * A search on `onSite`'s search-results page (present on sites built from {@link FOREIGN_TEMPLATE_SET})
+ * whose scope is `selectedSites`, the value of the search module's `src_sites.values` parameter.
+ * The term matches content of the demo site {@link SITE_KEY}.
+ */
+export const searchUrl = (onSite: string, selectedSites: string): string =>
+    `/cms/render/live/en/sites/${onSite}/home/search-results.html?` +
+    [
+        'src_terms%5B0%5D.term=company',
+        'src_terms%5B0%5D.match=any_word',
+        'src_terms%5B0%5D.fields.siteContent=true',
+        'src_terms%5B0%5D.fields.files=true',
+        'src_languages.values=en',
+        `src_sites.values=${selectedSites}`
+    ].join('&');
+
+const siteUuidQuery = gql`
+    query siteUuid($path: String!) {
+        jcr(workspace: LIVE) {
+            nodeByPath(path: $path) {
+                uuid
+            }
+        }
+    }
+`;
+
+/** The JCR identifier of a site node, i.e. what the renderer's `jsite` parameter carries. */
+export const readSiteUuid = (siteKey: string): Cypress.Chainable<string> => {
+    cy.login();
+    return cy
+        .apollo({query: siteUuidQuery, variables: {path: `/sites/${siteKey}`}})
+        .then((result: JcrResult<{jcr?: {nodeByPath?: {uuid?: string}}}>) => {
+            const uuid = result?.data?.jcr?.nodeByPath?.uuid;
+            if (!uuid) {
+                throw new Error(`Cannot read the identifier of /sites/${siteKey}: ${JSON.stringify(result)}`);
+            }
+
+            return uuid;
+        });
+};
+
+/** `href` attributes of `page` that `reference` lacks, leaving out links to the unguarded host itself. */
+const hrefsOnlyIn = (page: string, reference: string): string[] => {
+    const known = reference.match(/href="[^"]*"/g) || [];
+    const found = page.match(/href="[^"]*"/g) || [];
+    return found.filter(
+        (href, index) => found.indexOf(href) === index && !known.includes(href) && !href.includes(UNMAPPED_SERVER_NAME)
+    );
+};
+
+/**
+ * {@link expectBlocked} for a site chosen by a request parameter while the path names the hostname's
+ * own site. On the unguarded host, `path` must serve links that `controlPath` (the same page without
+ * the foreign selection) does not: those links are the other site's content, and the markers. Over
+ * `host` the same request must then be withheld.
+ */
+export const expectSelectionBlocked = (path: string, controlPath: string, host: string): void => {
+    rawGet(controlPath, UNMAPPED_SERVER_NAME).then(control => {
+        expectStatus(path, UNMAPPED_SERVER_NAME, HTTP_OK).then(unguarded => {
+            const markers = hrefsOnlyIn(unguarded.body, control.body);
+            expect(
+                markers.length,
+                `${describeRequest(path, UNMAPPED_SERVER_NAME)} serves no link that ` +
+                    `${describeRequest(controlPath, UNMAPPED_SERVER_NAME)} lacks; nothing to withhold`
+            ).to.be.greaterThan(0);
+            expectBlocked(path, host, {}, markers);
+        });
+    });
+};
+
 /** Points a hostname at {@link SITE_KEY}. */
 export const setSiteServerName = (serverName: string): void => {
     editSite(SITE_KEY, {serverName});
