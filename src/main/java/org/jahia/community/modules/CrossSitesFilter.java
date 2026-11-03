@@ -5,6 +5,7 @@ import org.jahia.bin.filters.AbstractServletFilter;
 import org.jahia.exceptions.JahiaException;
 import org.jahia.services.sites.JahiaSitesService;
 import org.jahia.utils.Url;
+import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +24,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -91,13 +93,19 @@ public class CrossSitesFilter extends AbstractServletFilter {
 
     static final String SITES_PATH_PART = JahiaSitesService.SITES_JCR_PATH + '/';
 
-    /** Authoring / default-workspace paths: /cms/{edit,editframe,render,contribute,...}/default, /files/default, /repository/default. */
-    private static final Pattern AUTHORING_PATH = Pattern.compile("^/(?:cms/[^/]+|files|repository)/default(?:/|$)");
+    /**
+     * Authoring / default-workspace paths: /cms/{edit,editframe,render,contribute,...}/default,
+     * /repository/default, /files/default. FileServlet maps the CKEditor placeholder workspace
+     * {workspace} to the default (edit) workspace, so /files/{workspace} is exempt as well.
+     */
+    private static final Pattern AUTHORING_PATH = Pattern.compile(
+            "^/(?:(?:cms/[^/]+|repository)/default|files/(?:default|\\{workspace\\}))(?:/|$)");
 
-    /** ASCII and C1 controls (incl. NEL U+0085) plus the Unicode line and paragraph separators. */
-    private static final Pattern LOG_UNSAFE_CHARS = Pattern.compile("[\\p{Cc}\\u0085\\u2028\\u2029]");
+    /** ASCII and C1 controls (incl. NEL U+0085), Unicode format characters (bidi overrides, zero-width) and the line and paragraph separators. */
+    private static final Pattern LOG_UNSAFE_CHARS = Pattern.compile("[\\p{Cc}\\p{Cf}\\u2028\\u2029]");
 
-    private static final int MAX_LOGGED_PATH_LENGTH = 512;
+    private static final int MAX_LOGGED_LENGTH = 512;
+    private static final String SITE_KEY_ATTRIBUTE = "siteKey";
     private static final long REWARN_INTERVAL_MILLIS = TimeUnit.MINUTES.toMillis(10);
 
     /** Seam over {@link JahiaSitesService#getSitenameByServerName(String)}, which throws a checked exception. */
@@ -134,6 +142,12 @@ public class CrossSitesFilter extends AbstractServletFilter {
         setDispatcherTypes(types);
     }
 
+    @Activate
+    public void activate() {
+        logger.info("Cross-site access filter active: order {}, dispatcher types {}", getOrder(),
+                new TreeSet<>(getDispatcherTypes()));
+    }
+
     @Override
     public void init(FilterConfig cfg) {
         // Nothing to configure.
@@ -161,10 +175,13 @@ public class CrossSitesFilter extends AbstractServletFilter {
                     if (logger.isInfoEnabled()) {
                         // Placeholder arguments are not escaped by SLF4J and the host and path are
                         // attacker-chosen, so each one is sanitised (and the path capped) first.
-                        logger.info("Blocked cross-site access: path addresses site '{}' but hostname '{}' maps to site '{}', path: {}",
+                        logger.info("Blocked cross-site access: path addresses site '{}' but hostname '{}' maps to site '{}', path: {}, referer: {}",
                                 sanitise(siteKeyFromPath), sanitise(host), sanitise(siteKeyFromHost),
-                                sanitise(abbreviate(path)));
+                                sanitise(abbreviate(path)), describeReferer(httpRequest.getHeader("Referer")));
                     }
+                    // ErrorServlet reads this attribute before it resolves the URL: without it the
+                    // 404 page would carry the branding and language of the site in the path.
+                    httpRequest.setAttribute(SITE_KEY_ATTRIBUTE, siteKeyFromHost);
                     ((HttpServletResponse) response).sendError(HttpServletResponse.SC_NOT_FOUND);
                     return;
                 }
@@ -188,11 +205,20 @@ public class CrossSitesFilter extends AbstractServletFilter {
     }
 
     /**
-     * JCR reads one leading {@code {}} (empty namespace) on a path segment as no marker at all.
-     * Not recursive on purpose: {@code {}{}x} becomes {@code {}x}, which JCR rejects too.
+     * The path as the renderer will read it. JCR reads one leading {@code {}} (empty namespace) on a
+     * path segment as no marker at all; not recursive on purpose, {@code {}{}x} becomes {@code {}x},
+     * which JCR rejects too. Then, in the renderer's order, one trailing "/" goes
+     * ({@code URLResolver#normalizeUrlPathInfo}) and a trailing "/*" goes ({@code resolveNode}).
      */
     static String normalizeJcrPath(String path) {
-        return StringUtils.defaultString(path).replace("/{}", "/");
+        String result = StringUtils.defaultString(path).replace("/{}", "/");
+        if (result.endsWith("/")) {
+            result = result.substring(0, result.length() - 1);
+        }
+        if (result.endsWith("/*")) {
+            result = result.substring(0, result.length() - 2);
+        }
+        return result;
     }
 
     /** Strips every trailing dot: "siteb.example." and "siteb.example" are the same host. */
@@ -216,25 +242,27 @@ public class CrossSitesFilter extends AbstractServletFilter {
                 || !path.contains(SITES_PATH_PART)) {
             return null;
         }
+        final Set<String> sites = existingSites instanceof Set ? (Set<String>) existingSites : new HashSet<>(existingSites);
 
         // ".../sites/<key>/..." - the common case.
         final String keyBetweenSlashes = StringUtils.substringBetween(path, SITES_PATH_PART, "/");
         if (StringUtils.isNotEmpty(keyBetweenSlashes)) {
-            return existingSites.contains(keyBetweenSlashes) ? keyBetweenSlashes : null;
+            return sites.contains(keyBetweenSlashes) ? keyBetweenSlashes : null;
         }
 
         // ".../sites/<key>", ".../sites/<key>.<type>" or ".../sites/<key>.<template>.<type>".
         // A site key may itself contain a dot, so where the key ends cannot be decided by looking
-        // at the string: the candidates are tried against the real sites, longest first.
-        String candidate = StringUtils.substringAfter(path, SITES_PATH_PART);
-        while (StringUtils.isNotEmpty(candidate)) {
-            if (existingSites.contains(candidate)) {
-                return candidate;
+        // at the string: the candidates (the whole ending, then each cut at a dot) are tried
+        // against the real sites, longest first. The path is attacker-chosen, so candidates longer
+        // than the longest site name are skipped without allocating them.
+        final String pathEnding = StringUtils.substringAfter(path, SITES_PATH_PART);
+        final int longestName = sites.stream().mapToInt(String::length).max().orElse(0);
+        int end = pathEnding.length();
+        while (end > 0) {
+            if (end <= longestName && sites.contains(pathEnding.substring(0, end))) {
+                return pathEnding.substring(0, end);
             }
-            if (!StringUtils.contains(candidate, ".")) {
-                return null;
-            }
-            candidate = StringUtils.substringBeforeLast(candidate, ".");
+            end = pathEnding.lastIndexOf('.', end - 1);
         }
         return null;
     }
@@ -281,9 +309,18 @@ public class CrossSitesFilter extends AbstractServletFilter {
         return LOG_UNSAFE_CHARS.matcher(message).replaceAll("?");
     }
 
-    /** The path is attacker-chosen, so only a bounded prefix goes to the log. */
-    private static String abbreviate(String path) {
-        return path.length() > MAX_LOGGED_PATH_LENGTH ? path.substring(0, MAX_LOGGED_PATH_LENGTH) + "\u2026" : path;
+    /** The path is attacker-chosen, so only a bounded prefix goes to the log; a surrogate pair is never cut. */
+    private static String abbreviate(String text) {
+        if (text.length() <= MAX_LOGGED_LENGTH) {
+            return text;
+        }
+        final int cut = Character.isHighSurrogate(text.charAt(MAX_LOGGED_LENGTH - 1)) ? MAX_LOGGED_LENGTH - 1 : MAX_LOGGED_LENGTH;
+        return text.substring(0, cut) + "\u2026";
+    }
+
+    /** The page embedding a cross-site link, so an admin can find it; "-" when the browser sent none. */
+    private static String describeReferer(String referer) {
+        return StringUtils.isEmpty(referer) ? "-" : sanitise(abbreviate(referer));
     }
 
     boolean isSiteListFailing() {
@@ -307,7 +344,8 @@ public class CrossSitesFilter extends AbstractServletFilter {
         private final String what;
         private final Logger logger;
         private final LongSupplier clockMillis;
-        private boolean failing;
+        // volatile: succeeded() runs on every /sites/ request and the healthy case must take no lock.
+        private volatile boolean failing;
         private long lastWarnMillis;
 
         FailureTracker(String what, Logger logger, LongSupplier clockMillis) {
@@ -334,14 +372,19 @@ public class CrossSitesFilter extends AbstractServletFilter {
             }
         }
 
-        synchronized void succeeded() {
-            if (failing) {
-                failing = false;
-                logger.info("Reading {} recovered, cross-site checks are effective again", what);
+        void succeeded() {
+            if (!failing) {
+                return;
+            }
+            synchronized (this) {
+                if (failing) {
+                    failing = false;
+                    logger.info("Reading {} recovered, cross-site checks are effective again", what);
+                }
             }
         }
 
-        synchronized boolean isFailing() {
+        boolean isFailing() {
             return failing;
         }
     }

@@ -1,5 +1,6 @@
 package org.jahia.community.modules;
 
+import org.jahia.services.sites.JahiaSitesService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -9,6 +10,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -101,7 +103,9 @@ class CrossSitesFilterPathTest {
             "/cms/contribute/default/en/sites/siteB/home.html",
             "/files/default/sites/siteB/files/a.png",
             "/repository/default/sites/siteB",
-            "/files/default"
+            "/files/default",
+            "/files/{workspace}/sites/siteB/files/a.png",
+            "/files/{workspace}"
     })
     @DisplayName("isAuthoringPath is true for default-workspace paths")
     void isAuthoringPath_defaultWorkspace_true(String path) {
@@ -117,6 +121,9 @@ class CrossSitesFilterPathTest {
             "/files/defaultx/sites/siteB",
             "/foo/cms/edit/default/sites/siteB",
             "/sites/default/siteB",
+            "/cms/render/{workspace}/en/sites/siteB/home.html",
+            "/repository/{workspace}/sites/siteB",
+            "/files/{workspace}x/sites/siteB",
             ""
     })
     @DisplayName("isAuthoringPath is false for live and unrelated paths")
@@ -168,7 +175,58 @@ class CrossSitesFilterPathTest {
     @Test
     @DisplayName("sites path prefix is derived from the JCR constant")
     void sitesPathPart_derivedFromJcrConstant() {
-        List<String> parts = Collections.singletonList(CrossSitesFilter.SITES_PATH_PART);
-        assertThat(parts).containsExactly("/sites/");
+        assertThat(CrossSitesFilter.SITES_PATH_PART).isEqualTo(JahiaSitesService.SITES_JCR_PATH + "/");
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @CsvSource({
+            "/sites/acme.html/,/sites/acme.html",
+            "/sites/acme.default.html/,/sites/acme.default.html",
+            "/sites/acme.html/*,/sites/acme.html",
+            "/sites/acme/home/*,/sites/acme/home",
+            "/sites/acme/home//,/sites/acme/home/",
+            "/sites/acme/*/,/sites/acme",
+            "/sites/acme/**,/sites/acme/**"
+    })
+    @DisplayName("normalizeJcrPath drops one trailing slash and a trailing /*, like the renderer")
+    void normalizeJcrPath_dropsRendererSuffixes(String raw, String expected) {
+        assertThat(CrossSitesFilter.normalizeJcrPath(raw)).isEqualTo(expected);
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @CsvSource({
+            "/sites/{}acme.fr.default.html,acme.fr",
+            "/sites/{}acme.fr/home.html,acme.fr",
+            "/sites/acme.fr.html/,acme.fr",
+            "/sites/acme.fr.default.html/*,acme.fr"
+    })
+    @DisplayName("resolving through normalizeJcrPath handles {} and suffixes with dotted keys")
+    void resolveAfterNormalisation_dottedKeys(String raw, String expected) {
+        String normalised = CrossSitesFilter.normalizeJcrPath(raw);
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath(normalised, SITES)).isEqualTo(expected);
+    }
+
+    @Test
+    @DisplayName("with acme and acme.fr both existing, the longest key wins")
+    void resolveSiteKeyFromPath_prefixKey_longestWins() {
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr.html", SITES)).isEqualTo("acme.fr");
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr", SITES)).isEqualTo("acme.fr");
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.de.html", SITES)).isEqualTo("acme");
+    }
+
+    @Test
+    @DisplayName("a path of thousands of dots still resolves correctly")
+    void resolveSiteKeyFromPath_manyDots_correctResult() {
+        String dots = ".".repeat(5000);
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/" + dots + "x", SITES)).isNull();
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr" + ".a".repeat(5000) + ".html", SITES))
+                .isEqualTo("acme.fr");
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme" + dots + "html", SITES)).isEqualTo("acme");
+    }
+
+    @Test
+    @DisplayName("resolveSiteKeyFromPath accepts a Set as well as a List")
+    void resolveSiteKeyFromPath_setInput() {
+        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr.html", new HashSet<>(SITES))).isEqualTo("acme.fr");
     }
 }

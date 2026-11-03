@@ -10,6 +10,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.invocation.Invocation;
@@ -37,6 +38,8 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
@@ -201,6 +204,111 @@ class CrossSitesFilterTest {
     }
 
     @Test
+    @DisplayName("a block sets the request siteKey to the hostname's site, before sendError")
+    void doFilter_blocked_setsHostSiteKeyBeforeSendError() throws Exception {
+        path("/cms/render/live", "/en/sites/siteA/home.html");
+        run();
+        assertBlocked();
+        InOrder order = inOrder(request, response);
+        order.verify(request).setAttribute("siteKey", "siteB");
+        order.verify(response).sendError(HttpServletResponse.SC_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("a pass never sets the request siteKey")
+    void doFilter_passed_doesNotSetSiteKey() throws Exception {
+        path("/cms/render/live", "/en/sites/siteB/home.html");
+        run();
+        assertPassed();
+        verify(request, never()).setAttribute(eq("siteKey"), any());
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @ValueSource(strings = {
+            "/cms/render/live/en/sites/siteA.html/",
+            "/cms/render/live/en/sites/siteA.html/*",
+            "/cms/render/live/en/sites/siteA.default.html/",
+            "/cms/render/live/en/sites/siteA/*",
+            "/cms/render/live/en/sites/{}acme.fr.default.html",
+            "/cms/render/live/en/sites/{}acme.fr.default.html/"
+    })
+    @DisplayName("renderer suffixes (trailing slash, /*) and {} do not hide a foreign site")
+    void doFilter_rendererSuffixes_blocked(String fullPath) throws Exception {
+        path(fullPath, null);
+        run();
+        assertBlocked();
+    }
+
+    @Test
+    @DisplayName("the CKEditor {workspace} placeholder is exempt like the default workspace")
+    void doFilter_workspacePlaceholder_passes() throws Exception {
+        path("/files/{workspace}", "/sites/siteA/files/a.png");
+        run();
+        assertPassed();
+    }
+
+    @Test
+    @DisplayName("bidi overrides and zero-width characters in the path cannot reach the log")
+    void doFilter_blockedPathWithFormatChars_isSanitisedInLog() throws Exception {
+        path("/cms/render/live", "/en/sites/siteA/a\u202Eb\u2066c\u2069d\u200Be\u202A");
+        run();
+        assertBlocked();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.chars().noneMatch(
+                c -> Character.getType(c) == Character.FORMAT));
+    }
+
+    @Test
+    @DisplayName("control characters, NEL and bidi overrides in the hostname cannot reach the log")
+    void doFilter_blockedHostWithUnsafeChars_isSanitisedInLog() throws Exception {
+        String host = "si\r\nteb\u0085.ex\u202Eample\u2028";
+        when(request.getServerName()).thenReturn(host);
+        hostMap.put(host, "siteB");
+        path("/cms/render/live", "/en/sites/siteA/home.html");
+        run();
+        assertBlocked();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("si??teb?.ex?ample?")
+                && m.chars().noneMatch(c -> c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x202E));
+    }
+
+    @Test
+    @DisplayName("the cap never splits a surrogate pair")
+    void doFilter_blockedLongPathAtSurrogate_notSplit() throws Exception {
+        String prefix = "/en/sites/siteA/";
+        path("", prefix + "a".repeat(512 - prefix.length() - 1) + "\uD83D\uDE00bbb");
+        run();
+        assertBlocked();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("a\u2026")
+                && m.chars().noneMatch(c -> Character.isSurrogate((char) c)));
+    }
+
+    @Test
+    @DisplayName("the Referer is logged, sanitised and capped; a dash when absent")
+    void doFilter_blocked_logsReferer() throws Exception {
+        path("/cms/render/live", "/en/sites/siteA/home.html");
+        run();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.endsWith("referer: -"));
+    }
+
+    @Test
+    @DisplayName("an attacker-chosen Referer is sanitised and capped at 512 characters")
+    void doFilter_blockedWithHostileReferer_sanitisedAndCapped() throws Exception {
+        when(request.getHeader("Referer")).thenReturn("http://x/\r\n\u202E" + "r".repeat(600));
+        path("/cms/render/live", "/en/sites/siteA/home.html");
+        run();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("referer: http://x/???")
+                && m.endsWith("r\u2026") && !m.contains("r".repeat(513)) && !m.contains("\n") && !m.contains("\r"));
+    }
+
+    @Test
+    @DisplayName("activation logs one INFO line with the order and dispatcher types; construction logs nothing")
+    void activate_logsOrderAndDispatcherTypes() {
+        verifyNoInteractions(logger);
+        filter.activate();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("0.5")
+                && m.contains("REQUEST") && m.contains("FORWARD"));
+    }
+
+    @Test
     @DisplayName("line separators, including NEL and U+2028/U+2029, cannot forge log lines")
     void doFilter_blockedPathWithLineSeparators_isSanitisedInLog() throws Exception {
         path("/cms/render/live", "/en/sites/siteA/a\r\nb\u0085c d e");
@@ -216,7 +324,7 @@ class CrossSitesFilterTest {
         path("/cms/render/live", "/en/sites/siteA/" + "a".repeat(600));
         run();
         assertBlocked();
-        assertThat(logged("info")).hasSize(1).allMatch(m -> m.endsWith("a…")
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("a…, referer: -")
                 && !m.contains("a".repeat(513))
                 && m.contains("a".repeat(480)));
     }
@@ -285,8 +393,8 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("hostname case is passed through to the case-insensitive lookup untouched")
-    void doFilter_upperCaseHost_passedThroughToLookup() throws Exception {
+    @DisplayName("host is passed to the lookup unmodified apart from trailing dots (case is left to Jahia)")
+    void doFilter_upperCaseHost_passedToLookupUnmodifiedExceptTrailingDots() throws Exception {
         when(request.getServerName()).thenReturn("SiteB.Example.");
         hostMap.put("SiteB.Example", "siteB");
         path("/cms/render/live", "/en/sites/siteA/home.html");
