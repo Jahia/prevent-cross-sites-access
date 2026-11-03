@@ -8,13 +8,13 @@ The module is a servlet filter that answers 404 when the site a request path add
 
 - **Docker** with the Compose plugin (`docker compose`).
 - **A Jahia license**, supplied as `JAHIA_LICENSE` in `tests/.env`. That file is git-ignored and excluded from the test image by `.dockerignore`; the license is never baked into an image.
-- **Maven and a JDK**, to build the module jar.
+- **Maven and a JDK 11 or later.** The tests use Java 11 APIs and Mockito 5. The bundle itself targets Java 8 (`osgi.ee` 1.8 in its manifest, per the maintainers).
 - **Node.js and Yarn 1** (the package manager is pinned to `yarn@1.22.22`), only for local runs against a node. The Docker image installs its own dependencies.
 - **Registry access** to the Jahia image you choose.
 
 ## Environment file and variables
 
-Create `tests/.env`. `set-env.sh` loads it; if it is missing, the values from `tests/.env.example` are used instead. Do not commit `tests/.env`.
+Create `tests/.env`. `set-env.sh` loads it. If it is missing, `set-env.sh` falls back to `tests/.env.example` and prints a `NOTE` on stderr that `JAHIA_LICENSE` will be empty. Do not commit `tests/.env`.
 
 | Variable | Read by | Purpose |
 |---|---|---|
@@ -23,27 +23,33 @@ Create `tests/.env`. `set-env.sh` loads it; if it is missing, the values from `t
 | `SUPER_USER_PASSWORD` | `docker-compose.yml` (both services) | Password of the Jahia super user the specs log in as |
 | `TESTS_IMAGE` | `docker-compose.yml` (`cypress` service) | Name of the Cypress test image built by `ci.build.sh` |
 | `MANIFEST` | `docker-compose.yml` (`cypress` service) | Provisioning manifest handed to the harness |
+| `MODULE_ID` | `ci.build.sh`, `ci.startup.sh` | Name prefix of the jar `ci.build.sh` deploys (`${MODULE_ID}-*-SNAPSHOT.jar`). It has to match the module's jar name, `prevent-cross-sites-access-<version>-SNAPSHOT.jar`; its value is set in the environment file |
 | `JAHIA_HOST` | `docker-compose.yml`, `cypress/support/crossSites.ts` | TCP target of the specs; defaults to `jahia` when empty or unset |
 | `JAHIA_PORT` | `docker-compose.yml`, `cypress/support/crossSites.ts` | TCP port of the specs; defaults to `8080` when empty or unset |
+| `JPDA` | `docker-compose.yml` (`jahia` service) | Opt-in debugger. Unset or `false` leaves the JDWP agent off; see "Debugging Jahia" below |
 | `NEXUS_USERNAME`, `NEXUS_PASSWORD` | `docker-compose.yml` (`cypress` service) | Passed through to the Cypress container. What the harness does with them is not documented in this directory |
 
-Set by the compose file itself: `JAHIA_URL=http://jahia:8080` and `JPDA=true` (JDWP debugging on port 8000). `ci.startup.sh` also prints `JAHIA_CLUSTER_ENABLED` and `MODULE_ID`; neither is needed by the compose file.
+Set by the compose file itself: `JAHIA_URL=http://jahia:8080`.
 
-Host ports are bound to loopback only: `127.0.0.1:8080` (Jahia HTTP) and `127.0.0.1:8000` (JDWP debug).
+Host ports are bound to loopback only: `127.0.0.1:8080` (Jahia HTTP) and `127.0.0.1:8000` (JDWP debug). The debug port is published whether or not `JPDA` is set, but the debugger only listens when `JPDA=true`.
+
+### Overriding a variable from the shell
+
+The image can be chosen per run with `JAHIA_IMAGE=... bash ci.startup.sh`, without editing the file. This works because the example environment file defines `JAHIA_IMAGE` with a `${JAHIA_IMAGE:-...}` default, so an exported value is used. `set-env.sh` sources `tests/.env` after the shell's variables exist, so a plain assignment in `tests/.env` would replace an exported value. Keep the `${VAR:-default}` pattern when a variable should stay overridable.
 
 ## Build the module first
 
-`ci.build.sh` deploys whatever it finds in `tests/artifacts`, which it fills from `../target`. It stops with an error if no `*-SNAPSHOT.jar` is in `../target`, and it deletes stale `*-SNAPSHOT` artifacts before copying, so the container only ever gets the module built from the checked-out source.
+`ci.build.sh` deploys the module jar it finds in `../target`, copying it into `tests/artifacts`. It takes the newest `${MODULE_ID}-*-SNAPSHOT.jar` and stops with an error in three cases: no such jar exists, the jar is older than any file under `../src` or `../pom.xml`, or nothing is left to deploy. Before copying, it deletes stale `*-SNAPSHOT` artifacts, so the container only ever gets the module built from the checked-out source.
 
 ```bash
 (cd .. && mvn clean install)
 ```
 
-Rebuild the jar after every Java change.
+Rebuild the jar after every Java change. If you edit a source file after the build, `ci.build.sh` refuses to continue until you rebuild.
 
 ## Choosing the Jahia image
 
-The image is selected with `JAHIA_IMAGE`. The suite has been run against three images:
+The suite has been run against three images:
 
 - `8.2.3.2`
 - `8.2.3.7`
@@ -72,6 +78,16 @@ To boot Jahia without running the specs, for instance to poke at it by hand:
 ./ci.startup.sh notests
 ```
 
+## Debugging Jahia
+
+The debugger is off by default. To enable it, start the stack with `JPDA=true`:
+
+```bash
+JPDA=true bash ci.startup.sh
+```
+
+The JDWP agent then listens on `127.0.0.1:8000`, and only on loopback.
+
 ## Run the specs against a local node
 
 ```bash
@@ -96,7 +112,9 @@ The filter logs under `org.jahia.community.modules.CrossSitesFilter`. With the c
 docker logs jahia 2>&1 | grep CrossSitesFilter
 ```
 
-Blocked requests appear as `Blocked cross-site access: ...` at INFO. The DEBUG line for hostnames that map to no site only appears when that logger is raised to DEBUG in Jahia's logging configuration; this suite does not set it. See the root README, "Diagnosing a request the module blocked", for the full list of messages.
+The filter logs one INFO line when it activates (`Cross-site access filter active: order 0.5, dispatcher types [FORWARD, REQUEST]`). If that line is absent and the logger is at INFO or finer, the filter is not active, and a green run would prove nothing.
+
+Blocked requests appear as `Blocked cross-site access: ...` at INFO. The line ends with `referer: <value>`, or `referer: -` when no Referer header was sent. The DEBUG line for hostnames that map to no site only appears when that logger is raised to DEBUG in Jahia's logging configuration; this suite does not set it. The root README, "Diagnosing a request the module blocked", lists every message and the Karaf commands (`log:get`, `log:set`) that change the level at runtime.
 
 ## How the specs drive the filter
 
@@ -125,11 +143,13 @@ The markers used to detect foreign content are derived at runtime from the forei
 
 A made-up site key would prove nothing: Jahia resolves an unknown key to no site and answers 404 on its own, so "404 instead of content" would hold with the module uninstalled. With a real foreign site the comparison is **200 (served on an unguarded host) against 404 (withheld on the mapped host)**. `expectBlocked()` asserts three things: the same URL is 200 on the unmapped host, it is 404 on the mapped host, and the body contains no foreign marker and differs from the unguarded body.
 
+What the 404 looks like: the filter hands the page to Jahia's error servlet with the `siteKey` attribute set to the site the host maps to, so the visitor gets that site's 404 template. Both test sites use `dx-base-demo-templates`, so the suite cannot observe the difference between a block page and a missing page on the mapped site, and it does not assert on the page's branding or language.
+
 Where the platform itself refuses a URL form, `expectWithheldWhereServed()` is used instead: if the unguarded host serves the foreign content, the mapped host must answer 404 without it; if the platform refuses the URL, the suite logs that and asserts only that no foreign content is served.
 
-Authentication is proven, not assumed. `sessionCookieHeader()` logs in and checks that a default-workspace page answers 200 with the session cookie and not without it. The `/cms/edit/...` URL is not used for this, because on 8.2 it redirects every visitor, guest included.
+Authentication is proven where it is needed, not assumed. `sessionCookieHeader()` logs in and checks that a default-workspace page answers 200 with the session cookie and not without it. The `/cms/edit/...` URL is not used for this, because on 8.2 it redirects every visitor, guest included. Spec 01 calls it in its `authenticated editors` block and in `does not enforce authoring URLs (default workspace files) for another site`. Spec 02 never authenticates; every request it makes is a guest request.
 
-Both specs restore `digitall`'s original `j:serverName` in `after()`, and both prove the session state they depend on before asserting. If `digitall` already has the test hostname when a run starts, which means an earlier run was aborted before its `after()`, `readSiteServerName()` stops with an error. Reset `j:serverName` by hand and rerun.
+Both specs restore `digitall`'s original `j:serverName` in `after()`. Spec 01 captures that value before anything changes and refuses to run if it cannot read it. If `digitall` already has the test hostname when a run starts, which means an earlier run was aborted before its `after()`, `readSiteServerName()` stops with an error. Reset `j:serverName` by hand and rerun.
 
 ## The two specs
 
@@ -204,7 +224,7 @@ Two classes in `src/test/java/org/jahia/community/modules`:
 (cd .. && mvn clean install)
 ```
 
-They run without Docker.
+They run without Docker. They need JDK 11 or later.
 
 ## Reports
 
