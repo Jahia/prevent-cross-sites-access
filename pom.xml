@@ -27,6 +27,21 @@
         <junit.version>5.14.4</junit.version>
         <mockito.version>5.23.0</mockito.version>
         <assertj.version>3.27.7</assertj.version>
+        <!--
+            Keeps the builder's local checkout path out of the released manifest. jahia-modules passes this
+            property to bnd's -removeheaders; the list is jahia-parent 8.2.3.2's default plus
+            Jahia-Source-Folders, which is what that parent's own no-source-folders release profile removes.
+            Jahia reads the header only to mount a module's sources in development mode
+            (JahiaBundleTemplatesPackageHandler, BundleSourceResourceResolver) and skips it when absent.
+        -->
+        <jahia.modules.bundle.removeheaders>
+            Include-Resource,
+            Private-Package,
+            Embed-Dependency,
+            Embed-Transitive,
+            Jahia-Depends-Skip-Require-Capability,
+            Jahia-Source-Folders
+        </jahia.modules.bundle.removeheaders>
     </properties>
 
     <scm>
