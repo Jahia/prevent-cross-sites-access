@@ -3,7 +3,6 @@ import {
     FOREIGN_SITE_KEY,
     rawGet,
     setSiteServerName,
-    SITE_KEY,
     SITE_PATH,
     SITE_SERVER_NAME,
     waitForMappingToApply
@@ -19,8 +18,10 @@ import {
  *
  *   - the filter matches on `request.getRequestURI()` - raw, undecoded, un-normalised - while
  *     `Render` resolves content from `request.getPathInfo()`, which the container has already
- *     decoded and normalised. Two parsers, one decision: the first three tests walk through
- *     that gap.
+ *     decoded and normalised. Two parsers, one decision. The percent-encoding half of that gap
+ *     is live (first test); the dot-segment half is not, because Jahia core's
+ *     MalformedRequestFilter rejects traversal before the module runs - that one is pinned
+ *     down in 01 instead, with the control that proves the 400 is core's and not ours.
  *   - `StringUtils.substringBetween(uri, "/sites/", "/")` returns null when the site key is
  *     the last path segment, so those URLs are never checked at all.
  *   - `systemsite` holds Jahia's cross-site shared content, so comparing it against the
@@ -48,15 +49,6 @@ describe('CrossSitesFilter - known bypasses and false positives', () => {
     after(() => {
         cy.login();
         setSiteServerName(originalServerName);
-    });
-
-    it('rejects a foreign site reached through dot segments', () => {
-        // The filter reads "digitall" out of the raw URI and waves it through; the container
-        // normalises the path away before Render resolves it. No encoded slash needed, so
-        // Tomcat's ALLOW_ENCODED_SLASH default does not help here.
-        const path = `/cms/render/live/en/sites/${SITE_KEY}/../${FOREIGN_SITE_KEY}/home.html`;
-
-        rawGet(path, SITE_SERVER_NAME).its('status').should('eq', 400);
     });
 
     it('rejects a foreign site reached through a percent-encoded /sites/ segment', () => {

@@ -65,9 +65,22 @@ Each spec restores `digitall`'s original `j:serverName` in `after()`.
 | `02-crossSitesBypasses.cy.ts` | **red** — defects found by code review, encoded as the behaviour that *should* hold |
 
 `02` is deliberately failing: it is the TDD red state for the filter's URL-matching defects
-(raw `getRequestURI()` vs the renderer's decoded, normalised `getPathInfo()`; `substringBetween`
-returning null when the site key ends the path; `systemsite` shared content being treated as a
-foreign site). The file header documents each one.
+(raw `getRequestURI()` vs the renderer's decoded `getPathInfo()`; `substringBetween` returning
+null when the site key ends the path; `systemsite` shared content being treated as a foreign
+site). The file header documents each one.
+
+### One defect that is real in the code but not reachable
+
+The same parser gap suggests a dot-segment bypass
+(`/sites/digitall/../another-site/home.html`). Measured against 8.2, it is **not exploitable**:
+Jahia core's `org.jahia.bin.filters.MalformedRequestFilter` answers 400 for a non-normalised URI
+and for the `%2e%2e` form, before `CrossSitesFilter` runs. That assertion therefore lives in
+`01`, not `02` — and it is paired with the same request over an *unmapped* hostname, where the
+filter provably cannot act. Both must return 400; if core ever stops screening traversal, both
+turn 404 and the test reports that the module is newly exposed.
+
+The percent-encoding half of the gap (`%73ites`) **is** live — `MalformedRequestFilter` screens
+for traversal, not for arbitrary encoding.
 
 To get a green run before those are fixed, scope the run to the first spec:
 

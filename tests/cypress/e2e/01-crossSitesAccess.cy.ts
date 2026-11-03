@@ -80,6 +80,31 @@ describe('CrossSitesFilter - enforcement', () => {
         rawGet(foreignRenderUrl, 'localhost').its('status').should('not.eq', 400);
     });
 
+    it('cannot be bypassed with dot segments, because Jahia core rejects them first', () => {
+        // On paper this is a bypass: the filter matches on the raw getRequestURI(), which still
+        // contains "/sites/digitall/", while Render resolves getPathInfo(), which the container
+        // has already normalised to "/sites/another-site/". Two parsers, one decision.
+        //
+        // In practice the gap is closed upstream of the module: Jahia core's
+        // org.jahia.bin.filters.MalformedRequestFilter answers 400 for a non-normalised URI
+        // ("request URI is not normalized") and for the encoded form ("path-traversal"),
+        // before CrossSitesFilter is ever consulted.
+        //
+        // The second assertion in each pair is what keeps this honest. Over an unmapped
+        // hostname CrossSitesFilter provably cannot act - getSiteKeyByServerName() returns ""
+        // and the filter stands down - yet the 400 is still there, so it was never ours. If a
+        // future Jahia stopped screening traversal, both assertions would turn 404 and this
+        // test would report that the module is now exposed.
+        const dotSegmentUrl = `/cms/render/live/en/sites/${SITE_KEY}/../${FOREIGN_SITE_KEY}/home.html`;
+        const encodedDotSegmentUrl = `/cms/render/live/en/sites/${SITE_KEY}/%2e%2e/${FOREIGN_SITE_KEY}/home.html`;
+
+        rawGet(dotSegmentUrl, SITE_SERVER_NAME).its('status').should('eq', 400);
+        rawGet(dotSegmentUrl, UNMAPPED_SERVER_NAME).its('status').should('eq', 400);
+
+        rawGet(encodedDotSegmentUrl, SITE_SERVER_NAME).its('status').should('eq', 400);
+        rawGet(encodedDotSegmentUrl, UNMAPPED_SERVER_NAME).its('status').should('eq', 400);
+    });
+
     describe('authenticated editors', () => {
         it('can still open edit mode for the site on its own hostname', () => {
             // The regression that would hurt most: the filter runs after Shiro but ignores the
