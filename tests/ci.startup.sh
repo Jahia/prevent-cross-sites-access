@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source ./set-env.sh
+source ./set-env.sh || { echo "ERROR: failed to load the environment (set-env.sh)" >&2; exit 1; }
 
 echo " == Printing the most important environment variables"
 echo " MANIFEST: ${MANIFEST}"
@@ -9,8 +9,7 @@ echo " JAHIA_IMAGE: ${JAHIA_IMAGE}"
 echo " JAHIA_CLUSTER_ENABLED: ${JAHIA_CLUSTER_ENABLED}"
 echo " MODULE_ID: ${MODULE_ID}"
 echo " JAHIA_URL: ${JAHIA_URL}"
-echo " SUPER_USER_PASSWORD: ${SUPER_USER_PASSWORD}"
 
 version=$(node -p "require('./package.json').devDependencies['@jahia/cypress']")
 echo Using @jahia/cypress@$version...
-npx --yes --package @jahia/cypress@$version ci.startup
+npx --yes --package @jahia/cypress@$version ci.startup "$@"
