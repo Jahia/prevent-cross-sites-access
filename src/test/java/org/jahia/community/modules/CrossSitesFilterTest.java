@@ -3,13 +3,17 @@ package org.jahia.community.modules;
 import org.jahia.exceptions.JahiaException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.invocation.Invocation;
+import org.slf4j.helpers.MessageFormatter;
 import org.slf4j.Logger;
 
 import javax.servlet.FilterChain;
@@ -28,12 +32,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -72,6 +77,31 @@ class CrossSitesFilterTest {
         }, logger, clockMillis::get);
         // Not every decision reaches the hostname, so this one stub is allowed to go unused.
         lenient().when(request.getServerName()).thenReturn("siteb.example");
+        lenient().when(logger.isInfoEnabled()).thenReturn(true);
+        lenient().when(logger.isDebugEnabled()).thenReturn(true);
+    }
+
+    /** Formatted messages (placeholders filled in) of every call made on the mocked logger at that level. */
+    private List<String> logged(String level) {
+        return loggerCalls(level).stream().map(CrossSitesFilterTest::format).collect(Collectors.toList());
+    }
+
+    /** Same, restricted to the calls that passed an exception as the last argument. */
+    private List<String> withThrowable(String level) {
+        return loggerCalls(level).stream()
+                .filter(args -> args[args.length - 1] instanceof Throwable)
+                .map(CrossSitesFilterTest::format).collect(Collectors.toList());
+    }
+
+    private List<Object[]> loggerCalls(String level) {
+        return mockingDetails(logger).getInvocations().stream()
+                .filter(i -> i.getMethod().getName().equals(level))
+                .map(Invocation::getArguments)
+                .collect(Collectors.toList());
+    }
+
+    private static String format(Object[] args) {
+        return MessageFormatter.arrayFormat((String) args[0], Arrays.copyOfRange(args, 1, args.length)).getMessage();
     }
 
     private void path(String servletPath, String pathInfo) {
@@ -108,18 +138,42 @@ class CrossSitesFilterTest {
         assertThat(filter.isMatchAllUrls()).isTrue();
     }
 
-    @Test
-    @DisplayName("own site on own hostname passes")
-    void doFilter_ownSite_passes() throws Exception {
-        path("/cms/render/live", "/en/sites/siteB/home.html");
+    private static Stream<Arguments> passingRequests() {
+        return Stream.of(
+                Arguments.of(Named.of("own site on own hostname", "/cms/render/live"), "/en/sites/siteB/home.html"),
+                Arguments.of(Named.of("unknown site key", "/cms/render/live"), "/en/sites/ghost/home.html"),
+                Arguments.of(Named.of("percent sign in key is not decoded here, digitall is not addressed", "/en"),
+                        "/sites/%64igitall/home.html"),
+                Arguments.of(Named.of("site key case matters: DIGITALL is not digitall", "/cms/render/live"),
+                        "/en/sites/DIGITALL/home.html"),
+                Arguments.of(Named.of("systemsite from any hostname", "/cms/render/live"),
+                        "/en/sites/systemsite/home.html"));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("passingRequests")
+    @DisplayName("requests that address no foreign existing site pass")
+    void doFilter_noForeignSite_passes(String servletPath, String pathInfo) throws Exception {
+        path(servletPath, pathInfo);
         run();
         assertPassed();
     }
 
-    @Test
+    private static Stream<Arguments> blockedRequests() {
+        return Stream.of(
+                Arguments.of(Named.of("foreign existing site", "/cms/render/live"), "/en/sites/siteA/home.html"),
+                Arguments.of(Named.of("FORWARD target path (servletPath only)",
+                        "/cms/render/live/en/sites/siteA/home.html"), null),
+                Arguments.of(Named.of("null servletPath, pathInfo is evaluated", null), "/sites/siteA/home.html"),
+                Arguments.of(Named.of("dotted site key resolved against the real list", "/cms/render/live"),
+                        "/sites/acme.fr.default.html"));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("blockedRequests")
     @DisplayName("foreign existing site on a mapped hostname is answered 404 without calling the chain")
-    void doFilter_foreignSite_blocked() throws Exception {
-        path("/cms/render/live", "/en/sites/siteA/home.html");
+    void doFilter_foreignSite_blocked(String servletPath, String pathInfo) throws Exception {
+        path(servletPath, pathInfo);
         run();
         assertBlocked();
     }
@@ -132,10 +186,9 @@ class CrossSitesFilterTest {
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertBlocked();
-        verify(logger, times(1)).info(anyString());
-        verify(logger).info(ArgumentMatchers.argThat((String m) -> m.contains("siteA") && m.contains("siteB")
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("siteA") && m.contains("siteB")
                 && m.contains("SiteB.Example") && !m.contains("SiteB.Example.")
-                && m.contains("/cms/render/live/en/sites/siteA/home.html")));
+                && m.contains("/cms/render/live/en/sites/siteA/home.html"));
     }
 
     @Test
@@ -144,8 +197,8 @@ class CrossSitesFilterTest {
         path("/cms/render/live", "/en/sites/siteA/a\r\nb\u0085c d e");
         run();
         assertBlocked();
-        verify(logger).info(ArgumentMatchers.argThat((String m) -> m.chars().noneMatch(
-                c -> c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029)));
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.chars().noneMatch(
+                c -> c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029));
     }
 
     @Test
@@ -154,33 +207,9 @@ class CrossSitesFilterTest {
         path("/cms/render/live", "/en/sites/siteA/" + "a".repeat(600));
         run();
         assertBlocked();
-        verify(logger).info(ArgumentMatchers.argThat((String m) -> m.endsWith("a…")
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.endsWith("a…")
                 && !m.contains("a".repeat(513))
-                && m.contains("a".repeat(480))));
-    }
-
-    @Test
-    @DisplayName("unknown site key passes")
-    void doFilter_unknownKey_passes() throws Exception {
-        path("/cms/render/live", "/en/sites/ghost/home.html");
-        run();
-        assertPassed();
-    }
-
-    @Test
-    @DisplayName("percent sign in the key is not decoded here: an existing site named digitall is not addressed")
-    void doFilter_percentEncodedKey_isNotASite() throws Exception {
-        path("/en", "/sites/%64igitall/home.html");
-        run();
-        assertPassed();
-    }
-
-    @Test
-    @DisplayName("site key case matters: DIGITALL is not digitall")
-    void doFilter_keyInOtherCase_passes() throws Exception {
-        path("/cms/render/live", "/en/sites/DIGITALL/home.html");
-        run();
-        assertPassed();
+                && m.contains("a".repeat(480)));
     }
 
     @ParameterizedTest(name = "[{index}] {0}{1}")
@@ -210,22 +239,14 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("systemsite passes from any hostname")
-    void doFilter_systemSite_passes() throws Exception {
-        path("/cms/render/live", "/en/sites/systemsite/home.html");
-        run();
-        assertPassed();
-    }
-
-    @Test
     @DisplayName("unmapped hostname passes and the fail-open is logged at DEBUG with the normalised host")
     void doFilter_unmappedHost_passesAndLogsDebug() throws Exception {
         when(request.getServerName()).thenReturn("unknown.example.");
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertPassed();
-        verify(logger).debug(contains("unknown.example"));
-        verify(logger, never()).info(anyString());
+        assertThat(logged("debug")).anyMatch(m -> m.contains("unknown.example") && !m.contains("unknown.example."));
+        assertThat(logged("info")).isEmpty();
     }
 
     @Test
@@ -311,36 +332,12 @@ class CrossSitesFilterTest {
     }
 
     @Test
-    @DisplayName("FORWARD target path (servletPath only) is evaluated")
-    void doFilter_forwardTargetServletPathOnly_blocked() throws Exception {
-        path("/cms/render/live/en/sites/siteA/home.html", null);
-        run();
-        assertBlocked();
-    }
-
-    @Test
     @DisplayName("null servletPath and pathInfo pass quietly")
     void doFilter_nullPaths_passes() throws Exception {
         path(null, null);
         run();
         assertPassed();
         verifyNoInteractions(logger);
-    }
-
-    @Test
-    @DisplayName("null servletPath with a pathInfo is still evaluated")
-    void doFilter_nullServletPath_usesPathInfo() throws Exception {
-        path(null, "/sites/siteA/home.html");
-        run();
-        assertBlocked();
-    }
-
-    @Test
-    @DisplayName("dotted site key is resolved against the real list")
-    void doFilter_dottedSiteKey_blocked() throws Exception {
-        path("/cms/render/live", "/sites/acme.fr.default.html");
-        run();
-        assertBlocked();
     }
 
     @Test
@@ -372,8 +369,8 @@ class CrossSitesFilterTest {
         }
         verify(chain, times(3)).doFilter(request, response);
         verify(response, never()).sendError(any(Integer.class));
-        verify(logger, times(1)).warn(anyString(), any(Throwable.class));
-        verify(logger, times(2)).debug(anyString(), any(Throwable.class));
+        assertThat(withThrowable("warn")).hasSize(1);
+        assertThat(withThrowable("debug")).hasSize(2);
         assertThat(filter.isSiteListFailing()).isTrue();
     }
 
@@ -385,13 +382,13 @@ class CrossSitesFilterTest {
         run();
         clockMillis.addAndGet(TimeUnit.MINUTES.toMillis(10) - 1);
         run();
-        verify(logger, times(1)).warn(anyString(), any(Throwable.class));
+        assertThat(withThrowable("warn")).hasSize(1);
         clockMillis.addAndGet(1);
         run();
-        verify(logger, times(2)).warn(anyString(), any(Throwable.class));
+        assertThat(withThrowable("warn")).hasSize(2);
         run();
-        verify(logger, times(2)).warn(anyString(), any(Throwable.class));
-        verify(logger, times(2)).debug(anyString(), any(Throwable.class));
+        assertThat(withThrowable("warn")).hasSize(2);
+        assertThat(withThrowable("debug")).hasSize(2);
     }
 
     @Test
@@ -406,11 +403,11 @@ class CrossSitesFilterTest {
         run();
         run();
         assertThat(filter.isSiteListFailing()).isFalse();
-        verify(logger, times(1)).info(contains("recovered"));
+        assertThat(logged("info")).filteredOn(m -> m.contains("recovered")).hasSize(1);
 
         sites.set(throwing());
         run();
-        verify(logger, times(2)).warn(anyString(), any(Throwable.class));
+        assertThat(withThrowable("warn")).hasSize(2);
     }
 
     @Test
@@ -420,7 +417,7 @@ class CrossSitesFilterTest {
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertPassed();
-        verify(logger, times(1)).warn(anyString());
+        assertThat(logged("warn")).hasSize(1);
         assertThat(filter.isSiteListFailing()).isTrue();
     }
 
@@ -432,7 +429,7 @@ class CrossSitesFilterTest {
         run();
         verify(chain).doFilter(request, response);
         verify(response, never()).sendError(any(Integer.class));
-        verify(logger, times(1)).warn(anyString());
+        assertThat(logged("warn")).hasSize(1);
         assertThat(filter.isSiteListFailing()).isTrue();
     }
 
@@ -451,12 +448,12 @@ class CrossSitesFilterTest {
         f.doFilter(request, response, chain);
         f.doFilter(request, response, chain);
         verify(chain, times(2)).doFilter(request, response);
-        verify(logger, times(1)).warn(anyString(), any(Throwable.class));
+        assertThat(withThrowable("warn")).hasSize(1);
         assertThat(f.isHostLookupFailing()).isTrue();
 
         broken.set(false);
         f.doFilter(request, response, chain);
-        verify(logger).info(contains("recovered"));
+        assertThat(logged("info")).filteredOn(m -> m.contains("recovered")).hasSize(1);
         assertThat(f.isHostLookupFailing()).isFalse();
         // the recovered request is blocked: sendError, and the chain was not called a third time
         verify(response).sendError(HttpServletResponse.SC_NOT_FOUND);
@@ -470,8 +467,7 @@ class CrossSitesFilterTest {
         path("/cms/render/live", "/en/sites/siteA/home.html");
         run();
         assertPassed();
-        verify(logger, never()).warn(anyString(), any(Throwable.class));
-        verify(logger, never()).warn(anyString());
-        verify(logger, never()).info(anyString());
+        assertThat(logged("warn")).isEmpty();
+        assertThat(logged("info")).isEmpty();
     }
 }

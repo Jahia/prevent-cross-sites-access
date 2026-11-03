@@ -2,6 +2,7 @@ package org.jahia.community.modules;
 
 import org.apache.commons.lang.StringUtils;
 import org.jahia.bin.filters.AbstractServletFilter;
+import org.jahia.exceptions.JahiaException;
 import org.jahia.services.sites.JahiaSitesService;
 import org.jahia.utils.Url;
 import org.osgi.service.component.annotations.Component;
@@ -19,6 +20,7 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -85,9 +87,9 @@ import java.util.regex.Pattern;
 @Component(service = AbstractServletFilter.class)
 public class CrossSitesFilter extends AbstractServletFilter {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(CrossSitesFilter.class);
+    private static final Logger DEFAULT_LOGGER = LoggerFactory.getLogger(CrossSitesFilter.class);
 
-    static final String SITES_PATH_PART = JahiaSitesService.SITES_JCR_PATH + "/";
+    static final String SITES_PATH_PART = JahiaSitesService.SITES_JCR_PATH + '/';
 
     /** Authoring / default-workspace paths: /cms/{edit,editframe,render,contribute,...}/default, /files/default, /repository/default. */
     private static final Pattern AUTHORING_PATH = Pattern.compile("^/(?:cms/[^/]+|files|repository)/default(?:/|$)");
@@ -101,7 +103,7 @@ public class CrossSitesFilter extends AbstractServletFilter {
     /** Seam over {@link JahiaSitesService#getSitenameByServerName(String)}, which throws a checked exception. */
     @FunctionalInterface
     interface ServerNameLookup {
-        String siteKeyFor(String serverName) throws Exception;
+        String siteKeyFor(String serverName) throws JahiaException;
     }
 
     private final Supplier<? extends Collection<String>> siteNames;
@@ -114,7 +116,7 @@ public class CrossSitesFilter extends AbstractServletFilter {
     public CrossSitesFilter() {
         this(() -> JahiaSitesService.getInstance().getSitesNames(),
                 host -> JahiaSitesService.getInstance().getSitenameByServerName(host),
-                LOGGER, System::currentTimeMillis);
+                DEFAULT_LOGGER, System::currentTimeMillis);
     }
 
     CrossSitesFilter(Supplier<? extends Collection<String>> siteNames, ServerNameLookup serverNameLookup,
@@ -156,9 +158,13 @@ public class CrossSitesFilter extends AbstractServletFilter {
                 final String host = normalizeServerName(httpRequest.getServerName());
                 final String siteKeyFromHost = resolveSiteKeyFromHost(host);
                 if (StringUtils.isNotEmpty(siteKeyFromHost) && !siteKeyFromPath.equals(siteKeyFromHost)) {
-                    logger.info(sanitise("Blocked cross-site access: path addresses site '" + siteKeyFromPath
-                            + "' but hostname '" + host + "' maps to site '" + siteKeyFromHost + "', path: "
-                            + abbreviate(path)));
+                    if (logger.isInfoEnabled()) {
+                        // Placeholder arguments are not escaped by SLF4J and the host and path are
+                        // attacker-chosen, so each one is sanitised (and the path capped) first.
+                        logger.info("Blocked cross-site access: path addresses site '{}' but hostname '{}' maps to site '{}', path: {}",
+                                sanitise(siteKeyFromPath), sanitise(host), sanitise(siteKeyFromHost),
+                                sanitise(abbreviate(path)));
+                    }
                     ((HttpServletResponse) response).sendError(HttpServletResponse.SC_NOT_FOUND);
                     return;
                 }
@@ -244,13 +250,13 @@ public class CrossSitesFilter extends AbstractServletFilter {
             if (names == null || names.isEmpty()) {
                 // Jahia always has at least systemsite, so an empty list is as unusable as null.
                 siteListFailure.failed(names == null ? "returned null" : "returned no site", null);
-                return null;
+                return Collections.emptyList();
             }
             siteListFailure.succeeded();
             return names;
         } catch (RuntimeException e) {
-            siteListFailure.failed("threw " + e, e);
-            return null;
+            siteListFailure.failed("failed", e);
+            return Collections.emptyList();
         }
     }
 
@@ -261,12 +267,12 @@ public class CrossSitesFilter extends AbstractServletFilter {
         try {
             final String siteKey = serverNameLookup.siteKeyFor(host);
             hostLookupFailure.succeeded();
-            if (StringUtils.isEmpty(siteKey)) {
-                logger.debug(sanitise("Hostname '" + host + "' maps to no site, cross-site check skipped"));
+            if (StringUtils.isEmpty(siteKey) && logger.isDebugEnabled()) {
+                logger.debug("Hostname '{}' maps to no site, cross-site check skipped", sanitise(host));
             }
             return siteKey;
-        } catch (Exception e) {
-            hostLookupFailure.failed("threw " + e, e);
+        } catch (JahiaException | RuntimeException e) {
+            hostLookupFailure.failed("failed", e);
             return null;
         }
     }
@@ -311,27 +317,27 @@ public class CrossSitesFilter extends AbstractServletFilter {
         }
 
         synchronized void failed(String reason, Exception cause) {
-            final String message = "Reading " + what + " " + reason + ", letting requests through unchecked";
+            final String format = "Reading {} {}, letting requests through unchecked";
             final long now = clockMillis.getAsLong();
             if (!failing || now - lastWarnMillis >= REWARN_INTERVAL_MILLIS) {
                 failing = true;
                 lastWarnMillis = now;
                 if (cause != null) {
-                    logger.warn(message, cause);
+                    logger.warn(format, what, reason, cause);
                 } else {
-                    logger.warn(message);
+                    logger.warn(format, what, reason);
                 }
             } else if (cause != null) {
-                logger.debug(message, cause);
+                logger.debug(format, what, reason, cause);
             } else {
-                logger.debug(message);
+                logger.debug(format, what, reason);
             }
         }
 
         synchronized void succeeded() {
             if (failing) {
                 failing = false;
-                logger.info("Reading " + what + " recovered, cross-site checks are effective again");
+                logger.info("Reading {} recovered, cross-site checks are effective again", what);
             }
         }
 
