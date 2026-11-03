@@ -36,7 +36,9 @@ import {
  */
 describe('CrossSitesFilter - enforcement', () => {
     const ownRenderUrl = `/cms/render/live/en/sites/${SITE_KEY}/home.html`;
-    const ownEditUrl = `/cms/edit/default/en/sites/${SITE_KEY}/home.html`;
+    // The frame Page Composer loads to edit a page. /cms/edit/... is no use here: on Jahia 8.2 it
+    // redirects everyone, guest included, to /jahia/page-composer/..., whatever the session.
+    const ownEditUrl = `/cms/editframe/default/en/sites/${SITE_KEY}/home.html`;
     const noSiteSegmentUrl = '/cms/render/live/en/no-sites-segment.html';
 
     let originalServerName: string | undefined;

@@ -55,8 +55,12 @@ const FOREIGN_PROBE_PATH = `${FOREIGN_FILES_PATH}/${PROBE_NAME}`;
 export const foreignFileUrl = `/files/live${FOREIGN_PROBE_PATH}`;
 export const foreignDefaultFileUrl = `/files/default${FOREIGN_PROBE_PATH}`;
 
-/** An edit-mode page that only an authenticated user is served (guests are redirected or refused). */
-const AUTH_PROBE_URL = `/cms/edit/default/en${SITE_PATH}/home.html`;
+/**
+ * A default-workspace page: a guest is answered 404, only an authenticated user gets 200.
+ * Not /cms/edit/...: on Jahia 8.2 that legacy URL redirects EVERYONE, guest included, to
+ * /jahia/page-composer/..., so its status says nothing about the session.
+ */
+const AUTH_PROBE_URL = `/cms/render/default/en${SITE_PATH}/home.html`;
 
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
