@@ -374,21 +374,35 @@ export const ensureForeignSite = (): void => {
             locale: 'en'
         });
     });
-    listSiteNames('LIVE').then(liveSites => {
-        if (!liveSites.includes(FOREIGN_SITE_KEY)) {
+    // "Published" is judged by the page the suite depends on, not by the site node: createSite()
+    // publishes the bare site node itself, so the site is "in live" while its pages are not.
+    rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).then(live => {
+        if (live.status !== HTTP_OK) {
+            cy.log(`Publishing ${FOREIGN_SITE_PATH} (home page returned ${live.status})`);
             publishAndWaitJobEnding(FOREIGN_SITE_PATH, ['en']);
         }
     });
 
     ensureProbeFile();
 
-    cy.waitUntil(() => rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).then(live => live.status === HTTP_OK), {
-        timeout: SITE_CREATION_TIMEOUT_MS,
-        interval: 2000,
-        errorMsg:
-            `Site ${FOREIGN_SITE_KEY} never served ${foreignRenderUrl} on its own hostname; ` +
-            'without content there the cross-site assertions could not tell a block from an empty site'
-    });
+    let lastHomeStatus = 'none';
+    cy.waitUntil(
+        () =>
+            rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).then(live => {
+                lastHomeStatus = String(live.status);
+                return live.status === HTTP_OK;
+            }),
+        {
+            timeout: SITE_CREATION_TIMEOUT_MS,
+            interval: 2000,
+            errorMsg: () =>
+                `${describeRequest(
+                    foreignRenderUrl,
+                    FOREIGN_SERVER_NAME
+                )} last returned ${lastHomeStatus}, wanted 200; ` +
+                'without content there the cross-site assertions could not tell a block from an empty site'
+        }
+    );
 
     rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).then(page => {
         const missing = '/cms/render/live/en/sites/no-such-site-for-markers/home.html';
