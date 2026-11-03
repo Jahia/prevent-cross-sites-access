@@ -422,6 +422,59 @@ class CrossSitesFilterTest {
         assertPassed();
     }
 
+    @ParameterizedTest(name = "[{index}] {0}")
+    @ValueSource(strings = {
+            "/cms/render/live/en/sites.html.ajax",
+            "/cms/render/live/en/sites/.html.ajax",
+            "/cms/render/live/en/sites.html",
+            "/cms/render/live/en/sites.default.html",
+            "/cms/render/live/en/sites",
+            "/cms/render/live/en/sites/",
+            "/cms/render/live/en/sites/*",
+            "/cms/render/live/en/{}sites.html.ajax",
+            "/cms/{}render/live/en/{}sites/.html.ajax",
+            "/en/sites.html.ajax",
+            "/en/sites/.html",
+            "/files/live/sites",
+            "/files/live/sites/"
+    })
+    @DisplayName("a live path addressing the /sites root node itself is answered 404 on a mapped hostname")
+    void doFilter_sitesRoot_blocked(String fullPath) throws Exception {
+        path(fullPath, null);
+        run();
+        assertBlocked();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("sites root")
+                && m.contains("maps to site 'siteB'"));
+        verify(request).setAttribute("siteKey", "siteB");
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @ValueSource(strings = {
+            "/cms/render/live/en/sites/siteB/home/sites.html",
+            "/cms/render/live/en/sites/siteB/sites.html.ajax",
+            "/cms/render/live/en/sites/ghost/sites.html",
+            "/cms/render/live/en/users/root/sites.html",
+            "/en/users/sites.html",
+            "/cms/render/live/en/sitesmap.html",
+            "/cms/render/default/en/sites.html.ajax"
+    })
+    @DisplayName("a 'sites' segment that is not the /sites root, or an authoring path, passes")
+    void doFilter_notSitesRoot_passes(String fullPath) throws Exception {
+        path(fullPath, null);
+        run();
+        assertPassed();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"unknown.example", "localhost"})
+    @DisplayName("the /sites root is not enforced on an unmapped or localhost hostname")
+    void doFilter_sitesRootOnUnmappedHost_passes(String host) throws Exception {
+        when(request.getServerName()).thenReturn(host);
+        path("/cms/render/live/en/sites.html.ajax", null);
+        run();
+        assertPassed();
+    }
+
     @Test
     @DisplayName("null servletPath and pathInfo pass quietly")
     void doFilter_nullPaths_passes() throws Exception {

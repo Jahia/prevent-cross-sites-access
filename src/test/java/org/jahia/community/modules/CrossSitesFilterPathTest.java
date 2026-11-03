@@ -39,6 +39,30 @@ class CrossSitesFilterPathTest {
         assertThat(CrossSitesFilter.resolveSiteKeyFromPath(path, SITES)).isEqualTo(expected);
     }
 
+    @ParameterizedTest(name = "[{index}] {0} -> {1}")
+    @CsvSource({
+            "/sites,true",
+            "/sites.html,true",
+            "/sites.html.ajax,true",
+            "/sites/.html.ajax,true",
+            "/en/sites.html,true",
+            "/cms/render/live/en/sites,true",
+            "/files/live/sites,true",
+            "/repository/live/sites,true",
+            "/sites/siteA,false",
+            "/sites/siteA/sites.html,false",
+            "/sites/ghost.html,false",
+            "/sitesmap.html,false",
+            "/en/users/sites.html,false",
+            "/cms/render/live/en/users/sites.html,false",
+            "/cms/render/live/en/home.html,false",
+            "'',false"
+    })
+    @DisplayName("addressesSitesRoot recognises the /sites node itself as the first JCR segment")
+    void addressesSitesRoot(String jcrPath, boolean expected) {
+        assertThat(CrossSitesFilter.addressesSitesRoot(jcrPath)).isEqualTo(expected);
+    }
+
     @ParameterizedTest(name = "[{index}] {0}")
     @ValueSource(strings = {
             "/sites/ghost/home.html",

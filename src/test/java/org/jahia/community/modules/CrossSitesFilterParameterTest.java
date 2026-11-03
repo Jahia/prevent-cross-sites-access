@@ -252,6 +252,76 @@ class CrossSitesFilterParameterTest {
         assertPassed();
     }
 
+    /** Adds every "name=value" pair of an unencoded query string; a repeated name repeats the parameter. */
+    private void query(String query) {
+        for (String pair : query.split("&")) {
+            final int eq = pair.indexOf('=');
+            param(pair.substring(0, eq), pair.substring(eq + 1));
+        }
+    }
+
+    private static Stream<Arguments> requestsJahiaRunsNoSearchFor() {
+        return Stream.of(
+                Arguments.of(Named.of("unknown src_ property (tracking tag)", "src_ref=newsletter")),
+                Arguments.of(Named.of("unknown src_ property", "src_x=1")),
+                Arguments.of(Named.of("unknown nested src_ property", "src_ref.y=2&src_x[0]=3")),
+                Arguments.of(Named.of("foreign site but no criterion", "src_sites.values=siteA")),
+                Arguments.of(Named.of("every site but no criterion", "src_sites.values=-all-")),
+                Arguments.of(Named.of("blank term", "src_terms[0].term=   &src_sites.values=siteA")),
+                Arguments.of(Named.of("'anytime' dates are no criterion", "src_created.type=anytime&src_lastModified.type=ANYTIME&src_sites.values=siteA")),
+                Arguments.of(Named.of("a date bound without a type is no criterion", "src_created.from=2020-01-01&src_sites.values=siteA")),
+                Arguments.of(Named.of("includeChildren alone is no path", "src_pagePath.includeChildren=true")),
+                Arguments.of(Named.of("own site and a blank reference list", "src_sites.values=siteB&src_sitesForReferences.values=")));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("requestsJahiaRunsNoSearchFor")
+    @DisplayName("src_ parameters that make Jahia run no search pass, whatever their site values")
+    void doFilter_noSearchRun_passes(String query) throws Exception {
+        query(query);
+        path("/cms/render/live/en/sites/siteB/home.html");
+        run();
+        assertPassed();
+    }
+
+    @Test
+    @DisplayName("a blank sitesForReferences value is ignored by Jahia and passes in a real search")
+    void doFilter_searchWithBlankReferences_passes() throws Exception {
+        ownSearchForm();
+        query("src_sites.values=siteB&src_sitesForReferences.values=");
+        path(OWN_SEARCH_PATH);
+        run();
+        assertPassed();
+    }
+
+    private static Stream<Arguments> searchesJahiaRunsBeyondTheHostSite() {
+        return Stream.of(
+                Arguments.of(Named.of("node type criterion, foreign site", "src_nodeType=jnt:page&src_sites.values=siteA")),
+                Arguments.of(Named.of("file type criterion, no scope", "src_fileType=pdf")),
+                Arguments.of(Named.of("author criterion, no scope", "src_createdBy=root")),
+                Arguments.of(Named.of("last author criterion, no scope", "src_lastModifiedBy=root")),
+                Arguments.of(Named.of("date criterion, no scope", "src_created.type=today")),
+                Arguments.of(Named.of("modification date criterion, every site", "src_lastModified.type=range&src_sites.values=-all-")),
+                Arguments.of(Named.of("second term, no scope", "src_terms[1].term=x")),
+                Arguments.of(Named.of("foreign page path is a criterion on its own", "src_pagePath.value=/sites/siteA")),
+                Arguments.of(Named.of("ordinary character splits ArrayConverter tokens", "src_terms[0].term=x&src_sites.values=siteB!siteA")),
+                Arguments.of(Named.of("quoted empty element is '/sites/'", "src_terms[0].term=x&src_sites.values=siteB,\"\"")),
+                Arguments.of(Named.of("repeated references with a blank element", "src_terms[0].term=x&src_sites.values=siteB"
+                        + "&src_sitesForReferences.values=systemsite&src_sitesForReferences.values=")),
+                Arguments.of(Named.of("a blank sites parameter may be the one BeanUtils applies last",
+                        "src_terms[0].term=x&src_sites.value=siteB&src_sites.values=")));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("searchesJahiaRunsBeyondTheHostSite")
+    @DisplayName("a search Jahia would run beyond the hostname's site is answered 404")
+    void doFilter_searchRunBeyondHostSite_blocked(String query) throws Exception {
+        query(query);
+        path("/cms/render/live/en/sites/siteB/home.html");
+        run();
+        assertBlocked();
+    }
+
     @Test
     @DisplayName("a request without search or jsite parameters does not even look up the hostname")
     void doFilter_noSiteSelectingParameter_passesWithoutParameterCheck() throws Exception {

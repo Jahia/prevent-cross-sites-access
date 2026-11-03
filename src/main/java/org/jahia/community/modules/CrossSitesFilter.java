@@ -1,12 +1,12 @@
 package org.jahia.community.modules;
 
-import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.commons.lang.StringUtils;
 import org.jahia.api.Constants;
 import org.jahia.bin.filters.AbstractServletFilter;
 import org.jahia.exceptions.JahiaException;
 import org.jahia.services.content.JCRSessionFactory;
 import org.jahia.services.sites.JahiaSitesService;
+import org.jahia.community.modules.SearchParameterCheck.ParameterViolation;
 import org.jahia.utils.Url;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
@@ -24,12 +24,10 @@ import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -85,13 +83,15 @@ import java.util.regex.Pattern;
  *       refused.</li>
  *   <li>the search parameters, prefix {@code src_}, which {@code SearchCriteriaFactory} (jahia-impl)
  *       copies onto a {@code SearchCriteria} bean with BeanUtils for the search module's
- *       {@code <s:results>} tag. The site scope comes from {@code src_sites.*} (with
- *       {@code src_sitesForReferences.*} added to it) or, when set, from {@code src_pagePath.*} /
- *       {@code src_filePath.*}, as {@code JahiaJCRSearchProvider} builds the query. A search is
- *       refused when that scope reaches another existing site, every site ({@code -all-}, a blank
- *       site value, a path outside {@code /sites/<key>}) or, with no scope parameter at all, the
- *       whole repository.</li>
+ *       {@code <s:results>} tag. Only a request on which Jahia would actually run a search is
+ *       refused, and only when its scope reaches another existing site, every site or the whole
+ *       repository. The rules mirrored, with the Jahia classes and version checked, are in
+ *       {@link SearchParameterCheck}.</li>
  * </ul>
+ *
+ * <p>A live path addressing the {@code /sites} node itself ({@code /sites.html.ajax},
+ * {@code /sites/.html.ajax}, ...) is refused on a mapped hostname too: it names no site key, yet the
+ * renderer lists every site's title, server name and top-level nodes from it.
  *
  * <p>Only a site that actually exists is treated as a cross-site target. An unknown key is not a
  * cross-site access: Jahia resolves it to no site, falls back to the hostname's site and answers
@@ -136,40 +136,14 @@ public class CrossSitesFilter extends AbstractServletFilter {
     /** Request parameter {@code org.jahia.bin.Render} reads to swap the render-context site. */
     static final String JSITE_PARAMETER = "jsite";
 
-    /** Prefix of every parameter {@code SearchCriteriaFactory} copies onto the search criteria. */
-    static final String SEARCH_PARAMETER_PREFIX = "src_";
-
-    /** {@code SearchCriteria} properties holding site keys; only the first one scopes a search on its own. */
-    private static final String SITES_PROPERTY = "sites";
-
     /** Name of the repository node every site lives under ({@code /sites}). */
-    private static final String SITES_NODE_NAME = "sites";
-    private static final Set<String> SITE_LIST_PROPERTIES =
-            Collections.unmodifiableSet(new HashSet<>(Arrays.asList(SITES_PROPERTY, "sitesForReferences")));
+    static final String SITES_NODE_NAME = "sites";
 
-    /** {@code SearchCriteria} properties holding a JCR path, which take precedence over the site list. */
-    private static final Set<String> PATH_PROPERTIES =
-            Collections.unmodifiableSet(new HashSet<>(Arrays.asList("pagePath", "filePath")));
-
-    /** The boolean sub-property of the path properties, the only one that carries no path. */
-    private static final String INCLUDE_CHILDREN_SUFFIX = ".includeChildren";
-
+    /** Servlets whose URL is {@code /<servlet>/<workspace>} followed by a JCR path. */
+    private static final Set<String> WORKSPACE_SERVLETS =
+            Collections.unmodifiableSet(new HashSet<>(Arrays.asList("files", "repository")));
     /** Reason logged when a lookup throws. */
     private static final String LOOKUP_FAILED = "failed";
-
-    /**
-     * Where a site list value is cut into candidate keys. Deliberately wider than any single parser:
-     * {@code CommaSeparatedMultipleValue} splits on commas; BeanUtils' {@code ArrayConverter} also strips
-     * braces and quotes and drops what follows a {@code /}; the provider appends the value to
-     * {@code /sites/}, so {@code /}, {@code {}} and a {@code [n]} index are JCR path syntax there.
-     */
-    private static final Pattern SITE_LIST_DELIMITERS = Pattern.compile("[,\\s\"'{}/\\[\\]]+");
-
-    /** Site-list tokens that widen the scope instead of naming a site. */
-    private static final Set<String> EVERY_SITE_TOKENS =
-            Collections.unmodifiableSet(new HashSet<>(Arrays.asList("-all-", "*", ".", "..")));
-
-    private static final Pattern SAME_NAME_SIBLING_INDEX = Pattern.compile("\\[\\d*\\]$");
 
     private static final int MAX_LOGGED_LENGTH = 512;
     private static final String SITE_KEY_ATTRIBUTE = "siteKey";
@@ -259,24 +233,76 @@ public class CrossSitesFilter extends AbstractServletFilter {
         final String jcrPath = normalizeJcrPath(path);
         final String siteKeyFromPath = jcrPath.contains(SITES_PATH_PART)
                 ? resolveSiteKeyFromPath(jcrPath, readSiteNames()) : null;
+        final boolean isSitesRoot = siteKeyFromPath == null && addressesSitesRoot(jcrPath);
 
         // systemsite holds the content Jahia shares across every site, so a reference to it
         // from any site is legitimate by definition and must not be read as a foreign site.
-        if (siteKeyFromPath == null || JahiaSitesService.SYSTEM_SITE_KEY.equals(siteKeyFromPath)) {
+        if (!isSitesRoot && (siteKeyFromPath == null || JahiaSitesService.SYSTEM_SITE_KEY.equals(siteKeyFromPath))) {
             return false;
         }
         final String siteKeyFromHost = hostSite.siteKey();
-        if (StringUtils.isEmpty(siteKeyFromHost) || siteKeyFromPath.equals(siteKeyFromHost)) {
+        if (StringUtils.isEmpty(siteKeyFromHost) || !isSitesRoot && siteKeyFromPath.equals(siteKeyFromHost)) {
             return false;
         }
         if (logger.isInfoEnabled()) {
             // Placeholder arguments are not escaped by SLF4J and the host and path are
             // attacker-chosen, so each one is sanitised (and the path capped) first.
-            logger.info("Blocked cross-site access: path addresses site '{}' but hostname '{}' maps to site '{}', path: {}, referer: {}",
-                    sanitise(siteKeyFromPath), sanitise(hostSite.host()), sanitise(siteKeyFromHost),
+            logger.info("Blocked cross-site access: path addresses {} but hostname '{}' maps to site '{}', path: {}, referer: {}",
+                    isSitesRoot ? "the sites root '" + JahiaSitesService.SITES_JCR_PATH + "'" : "site '" + sanitise(siteKeyFromPath) + "'",
+                    sanitise(hostSite.host()), sanitise(siteKeyFromHost),
                     sanitise(abbreviate(path)), describeReferer(httpRequest.getHeader("Referer")));
         }
         return true;
+    }
+
+    /**
+     * Whether the first {@code sites} segment of a normalised path is the {@code /sites} node itself,
+     * at the start of the JCR path: {@code /sites}, {@code /sites.<ext...>} or {@code /sites/.<ext...>}.
+     * Called only when no site key resolved, so {@code /sites/<own>/home/sites.html} never gets here.
+     */
+    static boolean addressesSitesRoot(String jcrPath) {
+        final String root = JahiaSitesService.SITES_JCR_PATH;
+        int at = jcrPath.indexOf(root);
+        while (at >= 0) {
+            final String rest = jcrPath.substring(at + root.length());
+            if (rest.isEmpty() || rest.charAt(0) == '.' || rest.charAt(0) == '/') {
+                final boolean isNodeItself = rest.isEmpty() || rest.charAt(0) == '.' || rest.equals("/") || rest.startsWith("/.");
+                return isNodeItself && isUrlPrefixBeforeJcrPath(jcrPath.substring(0, at));
+            }
+            at = jcrPath.indexOf(root, at + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Path prefixes a JCR path follows in a URL: {@code /cms/<servlet>/<workspace>[/<lang>]},
+     * {@code /files/<workspace>}, {@code /repository/<workspace>}, the SEO {@code /<lang>}, or none.
+     * Every segment of the prefix is non-empty.
+     */
+    private static boolean isUrlPrefixBeforeJcrPath(String prefix) {
+        if (prefix.isEmpty()) {
+            return true;
+        }
+        if (prefix.charAt(0) != '/') {
+            return false;
+        }
+        final String[] segments = prefix.substring(1).split("/", -1);
+        for (String segment : segments) {
+            if (segment.isEmpty()) {
+                return false;
+            }
+        }
+        switch (segments.length) {
+            case 1:
+                return true;
+            case 2:
+                return WORKSPACE_SERVLETS.contains(segments[0]);
+            case 3:
+            case 4:
+                return "cms".equals(segments[0]);
+            default:
+                return false;
+        }
     }
 
     /**
@@ -301,7 +327,7 @@ public class CrossSitesFilter extends AbstractServletFilter {
         if (violation == null) {
             final Collection<String> sites = readSiteNames();
             // No site list means "resolve no site", as for the path: the search is left to Jahia.
-            violation = sites.isEmpty() ? null : findSearchViolation(parameters, toSet(sites), siteKeyFromHost);
+            violation = sites.isEmpty() ? null : SearchParameterCheck.findViolation(parameters, toSet(sites), siteKeyFromHost);
         }
         if (violation == null) {
             return false;
@@ -317,7 +343,7 @@ public class CrossSitesFilter extends AbstractServletFilter {
 
     private static boolean hasSiteSelectingParameter(Collection<String> names) {
         for (String name : names) {
-            if (name != null && (JSITE_PARAMETER.equals(name) || name.startsWith(SEARCH_PARAMETER_PREFIX))) {
+            if (JSITE_PARAMETER.equals(name) || SearchParameterCheck.isSearchParameter(name)) {
                 return true;
             }
         }
@@ -375,135 +401,6 @@ public class CrossSitesFilter extends AbstractServletFilter {
         return JahiaSitesService.getInstance()
                 .getSiteByKey(siteKey, JCRSessionFactory.getInstance().getCurrentSystemSession(Constants.LIVE_WORKSPACE, null, null))
                 .getIdentifier();
-    }
-
-    /**
-     * Mirrors how {@code SearchCriteriaFactory} and {@code JahiaJCRSearchProvider} (jahia-impl) turn
-     * the {@code src_} parameters into a query scope, over-approximating where their parsing is lax.
-     *
-     * @return the first parameter that reaches beyond the hostname's site and systemsite, or null
-     */
-    static ParameterViolation findSearchViolation(Map<String, String[]> parameters, Set<String> sites,
-                                                  String siteKeyFromHost) {
-        boolean isSearch = false;
-        boolean isScoped = false;
-        for (Map.Entry<String, String[]> parameter : parameters.entrySet()) {
-            final String name = parameter.getKey();
-            if (name == null || !name.startsWith(SEARCH_PARAMETER_PREFIX)) {
-                continue;
-            }
-            isSearch = true;
-            final String property = searchProperty(name);
-            final String[] values = parameter.getValue() == null ? new String[0] : parameter.getValue();
-            for (String value : values) {
-                final String target = searchValueViolation(name, property, value, sites, siteKeyFromHost);
-                if (target != null) {
-                    return new ParameterViolation(name, target);
-                }
-                isScoped |= isScopingSearchValue(name, property, value);
-            }
-        }
-        // No site list and no path: the provider puts no scope on the query, i.e. the whole repository.
-        return isSearch && !isScoped
-                ? new ParameterViolation(SEARCH_PARAMETER_PREFIX + "*", "every site (no site or path scope)") : null;
-    }
-
-    /** What one {@code src_} value reaches beyond the hostname's site and systemsite, or null. */
-    private static String searchValueViolation(String name, String property, String value, Set<String> sites,
-                                               String siteKeyFromHost) {
-        if (SITE_LIST_PROPERTIES.contains(property)) {
-            return siteListViolation(value, sites, siteKeyFromHost);
-        }
-        if (isSearchPathProperty(name, property)) {
-            return pathListViolation(value, sites, siteKeyFromHost);
-        }
-        return null;
-    }
-
-    /** Whether one {@code src_} value puts a site or path scope on the query on its own. */
-    private static boolean isScopingSearchValue(String name, String property, String value) {
-        if (SITES_PROPERTY.equals(property)) {
-            return hasSiteToken(value);
-        }
-        return isSearchPathProperty(name, property) && StringUtils.isNotBlank(StringUtils.remove(value, ','));
-    }
-
-    private static boolean isSearchPathProperty(String name, String property) {
-        return PATH_PROPERTIES.contains(property) && !name.endsWith(INCLUDE_CHILDREN_SUFFIX);
-    }
-
-    /** The bean property a BeanUtils expression starts with: "sites" for "src_sites.values[0]". */
-    private static String searchProperty(String name) {
-        final String expression = name.substring(SEARCH_PARAMETER_PREFIX.length());
-        final int end = StringUtils.indexOfAny(expression, ".[(");
-        return end < 0 ? expression : expression.substring(0, end);
-    }
-
-    private static boolean hasSiteToken(String value) {
-        for (String token : SITE_LIST_DELIMITERS.split(StringUtils.defaultString(value))) {
-            if (!token.isEmpty()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** A blank value counts as every site: in a repeated parameter it becomes the scope "/sites/". */
-    private static String siteListViolation(String value, Set<String> sites, String siteKeyFromHost) {
-        if (StringUtils.isBlank(value)) {
-            return "every site (blank site value)";
-        }
-        for (String token : SITE_LIST_DELIMITERS.split(value)) {
-            if (EVERY_SITE_TOKENS.contains(token)) {
-                return "every site ('" + token + "')";
-            }
-            if (isForeignSite(token, sites, siteKeyFromHost)) {
-                return "site '" + token + "'";
-            }
-        }
-        return null;
-    }
-
-    /** Path properties are comma-separated lists too ({@code HierarchicalValue}). */
-    private static String pathListViolation(String value, Set<String> sites, String siteKeyFromHost) {
-        for (String part : StringUtils.split(StringUtils.defaultString(value), ',')) {
-            if (StringUtils.isNotBlank(part)) {
-                final String target = pathViolation(part, sites, siteKeyFromHost);
-                if (target != null) {
-                    return target;
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * A search path is confined when it lies under {@code /sites/<key>} for a key that is not another
-     * existing site. Empty segments are dropped and HTML entities decoded as the XPath branch of the
-     * provider does; the JCR {@code {}} marker and {@code [n]} index are removed per segment. A
-     * relative path or one outside {@code /sites/<key>} is refused: {@code ResultsTag} replaces a page
-     * path outside {@code /sites/} with {@code /sites/}, which is every site.
-     */
-    private static String pathViolation(String rawPath, Set<String> sites, String siteKeyFromHost) {
-        final String path = StringEscapeUtils.unescapeHtml(rawPath.trim());
-        final List<String> segments = new ArrayList<>();
-        for (String segment : StringUtils.split(path, '/')) {
-            final String name = SAME_NAME_SIBLING_INDEX.matcher(StringUtils.removeStart(segment, "{}")).replaceFirst("");
-            if (".".equals(name) || "..".equals(name)) {
-                return "every site (path '" + path + "')";
-            }
-            segments.add(name);
-        }
-        if (!path.startsWith("/") || segments.size() < 2 || !SITES_NODE_NAME.equals(segments.get(0))) {
-            return "every site (path '" + path + "')";
-        }
-        final String siteKey = segments.get(1);
-        return isForeignSite(siteKey, sites, siteKeyFromHost) ? "site '" + siteKey + "'" : null;
-    }
-
-    private static boolean isForeignSite(String siteKey, Set<String> sites, String siteKeyFromHost) {
-        return sites.contains(siteKey) && !siteKey.equals(siteKeyFromHost)
-                && !JahiaSitesService.SYSTEM_SITE_KEY.equals(siteKey);
     }
 
     private static Set<String> toSet(Collection<String> names) {
@@ -635,17 +532,6 @@ public class CrossSitesFilter extends AbstractServletFilter {
 
     boolean isSiteIdLookupFailing() {
         return siteIdLookupFailure.isFailing();
-    }
-
-    /** The parameter that selected a site the hostname does not map to, and what it selected. */
-    static final class ParameterViolation {
-        final String parameter;
-        final String target;
-
-        ParameterViolation(String parameter, String target) {
-            this.parameter = parameter;
-            this.target = target;
-        }
     }
 
     /** The request's hostname and its site, looked up at most once per request and only when needed. */

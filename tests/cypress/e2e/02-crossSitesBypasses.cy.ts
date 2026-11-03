@@ -4,10 +4,12 @@ import {
     expectFileBlocked,
     expectFileServed,
     expectSelectionBlocked,
+    expectServedUnguardedThenBlocked,
     expectStatus,
     expectWithheldWhereServed,
     FOREIGN_SERVER_NAME,
     FOREIGN_SITE_KEY,
+    FOREIGN_SITE_PATH,
     foreignFileUrlWithKey,
     foreignRenderUrl,
     readSiteServerName,
@@ -29,6 +31,8 @@ import {
  *     while a request parameter selected another site: the search module's `src_sites.values`
  *     (search results, excerpts and file text of the other site) and the renderer's `jsite`
  *     (the other site's navigation rendered in the visitor's page).
+ *   - metadata disclosure: the /sites node itself (`/sites.html.ajax`) addresses no site key, so it
+ *     passed, and lists every site's title, server name and top-level nodes.
  *   - availability: `systemsite` holds Jahia's cross-site shared content; treating it as "a
  *     different site" turned shared assets into errors on every site.
  *
@@ -131,6 +135,31 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
         readSiteUuid(FOREIGN_SITE_KEY).then(uuid => {
             expectStatus(`${foreignRenderUrl}?jsite=${uuid}`, FOREIGN_SERVER_NAME, 200);
         });
+    });
+
+    it('blocks the /sites root listing, which names every site, on a mapped hostname', () => {
+        // The path names no site key, yet the /sites node lists the sites. What it renders differs
+        // by Jahia version (8.2.3.2 prints each "Server name"; newer cores may show only keys or
+        // links), so the markers are every form that reveals the foreign site, and the ones the
+        // unguarded host really carries are the ones that must be withheld.
+        ['/cms/render/live/en/sites.html.ajax', '/cms/render/live/en/sites/.html.ajax'].forEach(path => {
+            expectServedUnguardedThenBlocked(path, SITE_SERVER_NAME, [
+                FOREIGN_SERVER_NAME,
+                `${FOREIGN_SITE_PATH}/`,
+                FOREIGN_SITE_KEY
+            ]);
+        });
+    });
+
+    it('still serves the own page carrying src_ parameters that start no search', () => {
+        // Jahia runs no search without a criterion such as a term, and BeanUtils ignores unknown
+        // properties, so neither a tracking tag nor a blank reference list may break the page.
+        expectStatus(`${foreignRenderUrl}?src_ref=newsletter`, FOREIGN_SERVER_NAME, 200);
+        expectStatus(
+            `${foreignRenderUrl}?src_sites.values=${FOREIGN_SITE_KEY}&src_sitesForReferences.values=`,
+            FOREIGN_SERVER_NAME,
+            200
+        );
     });
 
     it("leaves the encoded form working on the foreign site's own hostname", () => {

@@ -428,6 +428,36 @@ export const expectSelectionBlocked = (path: string, controlPath: string, host: 
     });
 };
 
+/**
+ * For pages that name no site in their path, such as the /sites root listing, whose content differs
+ * by Jahia version (some render each site's server name, others only keys, titles or node links).
+ *
+ * `markers` are every form in which the foreign site may be revealed. The unguarded host is asked
+ * first: the markers it actually carries are the ones the block must withhold, with the full
+ * {@link expectBlocked} check (404 rendered page, no marker, body differs). When the platform
+ * reveals none of them, that is logged and the weaker property is kept: the mapped host must not
+ * serve any marker.
+ */
+export const expectServedUnguardedThenBlocked = (path: string, host: string, markers: string[]): void => {
+    assertUsableMarkers(markers);
+    expectStatus(path, UNMAPPED_SERVER_NAME, HTTP_OK).then(unguarded => {
+        const revealing = markers.filter(marker => unguarded.body.includes(marker));
+        if (revealing.length > 0) {
+            cy.log(`${path} reveals ${JSON.stringify(revealing)} on an unguarded host; asserting it is withheld`);
+            expectBlocked(path, host, {}, revealing);
+            return;
+        }
+
+        cy.log(
+            `${describeRequest(path, UNMAPPED_SERVER_NAME)} reveals none of ${JSON.stringify(markers)} on this ` +
+                'Jahia version; asserting only that the mapped host serves none of them'
+        );
+        rawGet(path, host).then(response => {
+            expectNoForeignContent(response, describeRequest(path, host), markers);
+        });
+    });
+};
+
 /** Points a hostname at {@link SITE_KEY}. */
 export const setSiteServerName = (serverName: string): void => {
     editSite(SITE_KEY, {serverName});
