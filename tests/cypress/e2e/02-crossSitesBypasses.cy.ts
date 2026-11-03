@@ -1,6 +1,9 @@
 import {DocumentNode} from 'graphql';
 import {
+    ensureForeignSite,
+    FOREIGN_SERVER_NAME,
     FOREIGN_SITE_KEY,
+    foreignRenderUrl,
     rawGet,
     setSiteServerName,
     SITE_PATH,
@@ -9,28 +12,29 @@ import {
 } from '../support/crossSites';
 
 /**
- * ===========================================================================================
- * THIS SPEC IS EXPECTED TO FAIL ON THE CURRENT MODULE (TDD red state).
- * ===========================================================================================
+ * The URL forms that used to walk straight past the filter, kept as regression tests.
  *
- * Each test states the behaviour the module is supposed to have; each one currently fails,
- * and each failure is a defect found while reading CrossSitesFilter:
+ * Each one was a real defect, found by reading CrossSitesFilter and confirmed against a running
+ * Jahia. They differ in severity, and it is worth being exact about which is which:
  *
- *   - the filter matches on `request.getRequestURI()` - raw, undecoded, un-normalised - while
- *     `Render` resolves content from `request.getPathInfo()`, which the container has already
- *     decoded and normalised. Two parsers, one decision. The percent-encoding half of that gap
- *     is live (first test); the dot-segment half is not, because Jahia core's
- *     MalformedRequestFilter rejects traversal before the module runs - that one is pinned
- *     down in 01 instead, with the control that proves the 400 is core's and not ours.
- *   - `StringUtils.substringBetween(uri, "/sites/", "/")` returns null when the site key is
- *     the last path segment, so those URLs are never checked at all.
- *   - `systemsite` holds Jahia's cross-site shared content, so comparing it against the
- *     request's site key turns shared assets into 400s on every site.
+ *   - **content disclosure.** The filter matched on `request.getRequestURI()`, the raw and
+ *     undecoded request-target, while `Render` resolves content from the decoded path.
+ *     `/%73ites/` therefore looked like no site path at all here and like an ordinary one to
+ *     the renderer. That URL returns 200 with the foreign site's home page, so the old filter
+ *     handed a visitor on one site's hostname the full content of another's.
+ *   - **the filter bypassed, but nothing exposed.** `StringUtils.substringBetween(uri,
+ *     "/sites/", "/")` returns null when the site key is the last path segment, so those URLs
+ *     were never checked at all. They address the site node itself, which Jahia does not render
+ *     - measured, `/sites/<key>` and `/sites/<key>.html` are 404 even on the site's own
+ *     hostname. The gap is real and worth closing, but no content was reachable through it.
+ *   - **availability, not disclosure.** `systemsite` holds Jahia's cross-site shared content, so
+ *     comparing it against the request's site key turned shared assets into 400s on every site -
+ *     the same comparison failing in the opposite direction.
  *
- * Delete nothing here to make CI green - fix the filter, or change an assertion deliberately
- * if you disagree with the expectation it encodes (the systemsite one is a judgement call).
+ * The fix was to resolve the site key the way `URLResolver` resolves it, from the decoded path,
+ * and to treat only an existing site as a cross-site target.
  */
-describe('CrossSitesFilter - known bypasses and false positives', () => {
+describe('CrossSitesFilter - former bypasses and false positives', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const getSiteServerName: DocumentNode = require('graphql-tag/loader!../fixtures/graphql/query/getSiteServerName.graphql');
 
@@ -42,6 +46,7 @@ describe('CrossSitesFilter - known bypasses and false positives', () => {
             .then((result: {data?: {jcr?: {nodeByPath?: {serverName?: {value: string}}}}}) => {
                 originalServerName = result?.data?.jcr?.nodeByPath?.serverName?.value || 'localhost';
             });
+        ensureForeignSite();
         setSiteServerName(SITE_SERVER_NAME);
         waitForMappingToApply();
     });
@@ -52,33 +57,51 @@ describe('CrossSitesFilter - known bypasses and false positives', () => {
     });
 
     it('rejects a foreign site reached through a percent-encoded /sites/ segment', () => {
-        // "%73" is "s". getRequestURI() keeps the escape, so `contains("/sites/")` is false;
-        // getPathInfo() decodes it, so the renderer sees a perfectly ordinary site path.
+        // "%73" is "s". getRequestURI() keeps the escape, so matching on it missed "/sites/"
+        // entirely; the decoded path the renderer uses has always read as an ordinary site path.
         const path = `/cms/render/live/en/%73ites/${FOREIGN_SITE_KEY}/home.html`;
 
         rawGet(path, SITE_SERVER_NAME).its('status').should('eq', 400);
     });
 
     it('rejects a foreign site when the site key is the final path segment', () => {
-        // substringBetween needs a closing "/" after the opening one; with none it returns
-        // null and the request is never evaluated.
+        // Defence in depth rather than a plugged leak: this URL is a 404 on the foreign site's
+        // own hostname too, so nothing was ever served through it. See the header.
         const path = `/cms/render/live/en/sites/${FOREIGN_SITE_KEY}`;
 
         rawGet(path, SITE_SERVER_NAME).its('status').should('eq', 400);
     });
 
     it('rejects a foreign site when the site key ends the path before a file extension', () => {
+        // ".../sites/<key>.<type>" - a site key may itself contain a dot, so where the key ends
+        // is decided against the real site list rather than by cutting at the first ".".
         const path = `/cms/render/live/en/sites/${FOREIGN_SITE_KEY}.html`;
 
         rawGet(path, SITE_SERVER_NAME).its('status').should('eq', 400);
     });
 
     it('still serves cross-site shared content stored under systemsite', () => {
-        // systemsite is where Jahia keeps content shared by every site. Treating its key as
-        // "a different site" makes shared media 400 on each site that references it, which is
-        // the collateral-damage side of the same comparison.
+        // systemsite is where Jahia keeps content shared by every site. Treating its key as "a
+        // different site" made shared media 400 on each site that referenced it.
         const path = '/files/live/sites/systemsite/files';
 
         rawGet(path, SITE_SERVER_NAME).its('status').should('not.eq', 400);
+    });
+
+    it('leaves every one of those forms working on the site\'s own hostname', () => {
+        // The other half of each fix: none of the above may cost the foreign site access to its
+        // own content. A filter that answered 400 everywhere would pass all four tests above.
+        // Two of these URLs are 404 on their own hostname - that is Jahia declining to render a
+        // site node, not the filter, and 'not 400' is the distinction being asserted.
+        rawGet(`/cms/render/live/en/%73ites/${FOREIGN_SITE_KEY}/home.html`, FOREIGN_SERVER_NAME)
+            .its('status')
+            .should('not.eq', 400);
+        rawGet(`/cms/render/live/en/sites/${FOREIGN_SITE_KEY}`, FOREIGN_SERVER_NAME)
+            .its('status')
+            .should('not.eq', 400);
+        rawGet(`/cms/render/live/en/sites/${FOREIGN_SITE_KEY}.html`, FOREIGN_SERVER_NAME)
+            .its('status')
+            .should('not.eq', 400);
+        rawGet(foreignRenderUrl, FOREIGN_SERVER_NAME).its('status').should('eq', 200);
     });
 });

@@ -51,45 +51,66 @@ Both specs map a hostname to `digitall` with `editSite`, then make requests thro
   `ServerNameToSiteMapper.getSiteKeyByServerName()` (mapped site, unmapped host, `localhost`)
   with no DNS or compose aliases.
 
-Requests use `another-site`, a site key that does not exist. The only possible answers are then
-400 (the filter rejected it) or 404 (the renderer did not find it), which makes *which component
-produced the status* provable instead of inferred.
+Both specs run against **two real sites**: `digitall`, and a second site the fixture creates if
+it is missing (`ensureForeignSite()` in `cypress/support/crossSites.ts`). A made-up site key
+would prove nothing — Jahia resolves an unknown key to no site, falls back to the hostname's
+site and answers 404 on its own, so "404 instead of the content" would hold with the module
+uninstalled. With a real site the comparison is **200 (served) against 400 (refused)**, which is
+the disclosure the module exists to prevent.
+
+Site creation is skipped when the second site already serves its home page, so repeated local
+runs pay for it once. It is deliberately not deleted afterwards; the CI container is discarded
+either way.
 
 Each spec restores `digitall`'s original `j:serverName` in `after()`.
 
 ## The two specs
 
-| Spec | Expected state |
+| Spec | Covers |
 |---|---|
-| `01-crossSitesAccess.cy.ts` | **green** — the behaviour the module is meant to have |
-| `02-crossSitesBypasses.cy.ts` | **red** — defects found by code review, encoded as the behaviour that *should* hold |
+| `01-crossSitesAccess.cy.ts` | the behaviour the module is meant to have, including the documented fail-open branches |
+| `02-crossSitesBypasses.cy.ts` | the URL forms that used to walk past the filter, kept as regression tests |
 
-`02` is deliberately failing: it is the TDD red state for the filter's URL-matching defects
-(raw `getRequestURI()` vs the renderer's decoded `getPathInfo()`; `substringBetween` returning
-null when the site key ends the path; `systemsite` shared content being treated as a foreign
-site). The file header documents each one.
+Both are expected to pass. `02` was the TDD red state for three defects, which differ in
+severity:
+
+| Defect | Severity | Measured |
+|---|---|---|
+| matched the raw `getRequestURI()`, not the decoded path | **content disclosure** | `/%73ites/<other>/home.html` returns 200 with the other site's home page |
+| `substringBetween` returned null when the site key ends the path | filter bypassed, nothing exposed | `/sites/<key>` and `/sites/<key>.html` are 404 even on the site's own hostname |
+| `systemsite` read as a foreign site | availability | shared media 400'd on every site referencing it |
+
+Each test in `02` now pins one of those fixes. Its last test asserts the same URL forms still
+work on the site's **own** hostname, because a filter that answered 400 unconditionally would
+satisfy every other assertion in the file.
 
 ### One defect that is real in the code but not reachable
 
 The same parser gap suggests a dot-segment bypass
-(`/sites/digitall/../another-site/home.html`). Measured against 8.2, it is **not exploitable**:
-Jahia core's `org.jahia.bin.filters.MalformedRequestFilter` answers 400 for a non-normalised URI
-and for the `%2e%2e` form, before `CrossSitesFilter` runs. That assertion therefore lives in
-`01`, not `02` — and it is paired with the same request over an *unmapped* hostname, where the
-filter provably cannot act. Both must return 400; if core ever stops screening traversal, both
-turn 404 and the test reports that the module is newly exposed.
+(`/sites/digitall/../<other>/home.html`). Measured against 8.2 it is **not exploitable**: Jahia
+core's `org.jahia.bin.filters.MalformedRequestFilter` answers 400 for a non-normalised URI and
+for the `%2e%2e` form, before `CrossSitesFilter` runs. That assertion therefore lives in `01` —
+paired with the same request over an *unmapped* hostname, where the filter provably cannot act.
+Both must return 400; if core ever stops screening traversal, both turn 200 and the test reports
+that the module is newly exposed.
 
-The percent-encoding half of the gap (`%73ites`) **is** live — `MalformedRequestFilter` screens
-for traversal, not for arbitrary encoding.
+## What the filter does
 
-To get a green run before those are fixed, scope the run to the first spec:
+It flags a request when the site the path addresses is **a different existing site** from the one
+the hostname maps to. Three things follow, and all three are asserted:
 
-```bash
-yarn e2e:ci --spec "cypress/e2e/01-crossSitesAccess.cy.ts"
-```
+- the path is read **decoded** (`getServletPath() + getPathInfo()`), the same string the renderer
+  resolves content from — so `/%73ites/` cannot mean one thing here and another there;
+- the site key is extracted the way `URLResolver.resolveSiteKeyFromPath` extracts it, including
+  the trailing-segment and template-extension forms, and the dot ambiguity is settled against the
+  real site list rather than by cutting at the first `.`;
+- only an **existing** site counts as a cross-site target. An unknown key is left to Jahia's own
+  404, so unrelated paths that merely contain `/sites/` — a module's static resources, say — are
+  not turned into 400s. `systemsite` is exempt for the same reason: it is shared by every site.
 
-Do not delete tests from `02` to make CI green — fix the filter, or change an assertion
-deliberately if you disagree with the expectation it encodes.
+The control is hostname-driven, so it stands down entirely on a hostname that maps to no site or
+on `localhost`. That is inherited from `ServerNameToSiteMapper`; `01` asserts it rather than
+hiding it.
 
 ## Reports
 
