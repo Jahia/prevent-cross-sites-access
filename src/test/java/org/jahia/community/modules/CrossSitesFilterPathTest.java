@@ -36,7 +36,7 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("resolveSiteKeyFromPath extracts the existing site the path addresses")
     void resolveSiteKeyFromPath_knownSite_returnsKey(String path, String expected) {
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath(path, SITES)).isEqualTo(expected);
+        assertThat(SitePaths.resolveSiteKeyFromPath(path, SITES)).isEqualTo(expected);
     }
 
     @ParameterizedTest(name = "[{index}] {0} -> {1}")
@@ -60,7 +60,7 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("addressesSitesRoot recognises the /sites node itself as the first JCR segment")
     void addressesSitesRoot(String jcrPath, boolean expected) {
-        assertThat(CrossSitesFilter.addressesSitesRoot(jcrPath)).isEqualTo(expected);
+        assertThat(SitePaths.addressesSitesRoot(jcrPath)).isEqualTo(expected);
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
@@ -80,22 +80,22 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("resolveSiteKeyFromPath returns null when no existing site is addressed")
     void resolveSiteKeyFromPath_noExistingSite_returnsNull(String path) {
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath(path, SITES)).isNull();
+        assertThat(SitePaths.resolveSiteKeyFromPath(path, SITES)).isNull();
     }
 
     @Test
     @DisplayName("resolveSiteKeyFromPath only looks at the first /sites/ occurrence")
     void resolveSiteKeyFromPath_twoSitesSegments_firstWins() {
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/ghost/x/sites/siteB/home.html", SITES)).isNull();
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/siteA/x/sites/siteB/home.html", SITES)).isEqualTo("siteA");
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/ghost/x/sites/siteB/home.html", SITES)).isNull();
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/siteA/x/sites/siteB/home.html", SITES)).isEqualTo("siteA");
     }
 
     @Test
     @DisplayName("resolveSiteKeyFromPath resolves nothing for null path, null or empty site list")
     void resolveSiteKeyFromPath_nullOrEmptyInputs_returnsNull() {
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath(null, SITES)).isNull();
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/siteA/x", null)).isNull();
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/siteA/x", Collections.emptyList())).isNull();
+        assertThat(SitePaths.resolveSiteKeyFromPath(null, SITES)).isNull();
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/siteA/x", null)).isNull();
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/siteA/x", Collections.emptyList())).isNull();
     }
 
     @ParameterizedTest(name = "[{0}] -> [{1}]")
@@ -109,13 +109,13 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("normalizeServerName strips every trailing dot and nothing else")
     void normalizeServerName_stripsTrailingDots(String raw, String expected) {
-        assertThat(CrossSitesFilter.normalizeServerName(raw)).isEqualTo(expected);
+        assertThat(SiteDirectory.normalizeServerName(raw)).isEqualTo(expected);
     }
 
     @Test
     @DisplayName("normalizeServerName maps null to the empty string")
     void normalizeServerName_null_returnsEmpty() {
-        assertThat(CrossSitesFilter.normalizeServerName(null)).isEmpty();
+        assertThat(SiteDirectory.normalizeServerName(null)).isEmpty();
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
@@ -132,7 +132,7 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("isAuthoringPath is true for default-workspace paths")
     void isAuthoringPath_defaultWorkspace_true(String path) {
-        assertThat(CrossSitesFilter.isAuthoringPath(path)).isTrue();
+        assertThat(SitePaths.isAuthoringPath(path)).isTrue();
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
@@ -151,13 +151,13 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("isAuthoringPath is false for live and unrelated paths")
     void isAuthoringPath_otherPaths_false(String path) {
-        assertThat(CrossSitesFilter.isAuthoringPath(path)).isFalse();
+        assertThat(SitePaths.isAuthoringPath(path)).isFalse();
     }
 
     @Test
     @DisplayName("isAuthoringPath is false for a null path")
     void isAuthoringPath_null_false() {
-        assertThat(CrossSitesFilter.isAuthoringPath(null)).isFalse();
+        assertThat(SitePaths.isAuthoringPath(null)).isFalse();
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
@@ -174,31 +174,31 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("normalizeJcrPath strips one leading {} per segment, as JCR does")
     void normalizeJcrPath_stripsOneEmptyNamespacePerSegment(String raw, String expected) {
-        assertThat(CrossSitesFilter.normalizeJcrPath(raw)).isEqualTo(expected);
+        assertThat(SitePaths.normalizeJcrPath(raw)).isEqualTo(expected);
     }
 
     @Test
     @DisplayName("normalizeJcrPath maps null to the empty string")
     void normalizeJcrPath_null_returnsEmpty() {
-        assertThat(CrossSitesFilter.normalizeJcrPath(null)).isEmpty();
+        assertThat(SitePaths.normalizeJcrPath(null)).isEmpty();
     }
 
     @Test
     @DisplayName("site key matching is case-sensitive, like JCR")
     void resolveSiteKeyFromPath_differentCase_returnsNull() {
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/SITEA/home.html", SITES)).isNull();
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/SITEA/home.html", SITES)).isNull();
     }
 
     @Test
     @DisplayName("an authoring path hidden behind {} is not authoring")
     void isAuthoringPath_emptyNamespaceMarker_false() {
-        assertThat(CrossSitesFilter.isAuthoringPath("/cms/render/{}default/en/sites/siteB/home.html")).isFalse();
+        assertThat(SitePaths.isAuthoringPath("/cms/render/{}default/en/sites/siteB/home.html")).isFalse();
     }
 
     @Test
     @DisplayName("sites path prefix is derived from the JCR constant")
     void sitesPathPart_derivedFromJcrConstant() {
-        assertThat(JahiaSitesService.SITES_JCR_PATH + "/").isEqualTo(CrossSitesFilter.SITES_PATH_PART);
+        assertThat(JahiaSitesService.SITES_JCR_PATH + "/").isEqualTo(SitePaths.SITES_PATH_PART);
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
@@ -213,7 +213,7 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("normalizeJcrPath drops one trailing slash and a trailing /*, like the renderer")
     void normalizeJcrPath_dropsRendererSuffixes(String raw, String expected) {
-        assertThat(CrossSitesFilter.normalizeJcrPath(raw)).isEqualTo(expected);
+        assertThat(SitePaths.normalizeJcrPath(raw)).isEqualTo(expected);
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
@@ -225,31 +225,31 @@ class CrossSitesFilterPathTest {
     })
     @DisplayName("resolving through normalizeJcrPath handles {} and suffixes with dotted keys")
     void resolveAfterNormalisation_dottedKeys(String raw, String expected) {
-        String normalised = CrossSitesFilter.normalizeJcrPath(raw);
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath(normalised, SITES)).isEqualTo(expected);
+        String normalised = SitePaths.normalizeJcrPath(raw);
+        assertThat(SitePaths.resolveSiteKeyFromPath(normalised, SITES)).isEqualTo(expected);
     }
 
     @Test
     @DisplayName("with acme and acme.fr both existing, the longest key wins")
     void resolveSiteKeyFromPath_prefixKey_longestWins() {
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr.html", SITES)).isEqualTo("acme.fr");
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr", SITES)).isEqualTo("acme.fr");
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.de.html", SITES)).isEqualTo("acme");
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/acme.fr.html", SITES)).isEqualTo("acme.fr");
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/acme.fr", SITES)).isEqualTo("acme.fr");
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/acme.de.html", SITES)).isEqualTo("acme");
     }
 
     @Test
     @DisplayName("a path of thousands of dots still resolves correctly")
     void resolveSiteKeyFromPath_manyDots_correctResult() {
         String dots = ".".repeat(5000);
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/" + dots + "x", SITES)).isNull();
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr" + ".a".repeat(5000) + ".html", SITES))
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/" + dots + "x", SITES)).isNull();
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/acme.fr" + ".a".repeat(5000) + ".html", SITES))
                 .isEqualTo("acme.fr");
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme" + dots + "html", SITES)).isEqualTo("acme");
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/acme" + dots + "html", SITES)).isEqualTo("acme");
     }
 
     @Test
     @DisplayName("resolveSiteKeyFromPath accepts a Set as well as a List")
     void resolveSiteKeyFromPath_setInput() {
-        assertThat(CrossSitesFilter.resolveSiteKeyFromPath("/sites/acme.fr.html", new HashSet<>(SITES))).isEqualTo("acme.fr");
+        assertThat(SitePaths.resolveSiteKeyFromPath("/sites/acme.fr.html", new HashSet<>(SITES))).isEqualTo("acme.fr");
     }
 }

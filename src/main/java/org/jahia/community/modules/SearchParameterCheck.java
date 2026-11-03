@@ -3,7 +3,6 @@ package org.jahia.community.modules;
 import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.commons.lang.StringUtils;
 import org.jahia.services.search.SearchCriteria;
-import org.jahia.services.sites.JahiaSitesService;
 import org.slf4j.LoggerFactory;
 
 import java.beans.IntrospectionException;
@@ -266,7 +265,7 @@ final class SearchParameterCheck {
             if (EVERY_SITE_TOKENS.contains(token)) {
                 return "every site ('" + token + "')";
             }
-            if (isForeignSite(token, sites, siteKeyFromHost)) {
+            if (SiteDirectory.isForeignSite(token, sites, siteKeyFromHost)) {
                 return "site '" + token + "'";
             }
         }
@@ -292,16 +291,11 @@ final class SearchParameterCheck {
             }
             segments.add(name);
         }
-        if (!path.startsWith("/") || segments.size() < 2 || !CrossSitesFilter.SITES_NODE_NAME.equals(segments.get(0))) {
+        if (!path.startsWith("/") || segments.size() < 2 || !SitePaths.SITES_NODE_NAME.equals(segments.get(0))) {
             return "every site (path '" + path + "')";
         }
         final String siteKey = segments.get(1);
-        return isForeignSite(siteKey, sites, siteKeyFromHost) ? "site '" + siteKey + "'" : null;
-    }
-
-    private static boolean isForeignSite(String siteKey, Set<String> sites, String siteKeyFromHost) {
-        return sites.contains(siteKey) && !siteKey.equals(siteKeyFromHost)
-                && !JahiaSitesService.SYSTEM_SITE_KEY.equals(siteKey);
+        return SiteDirectory.isForeignSite(siteKey, sites, siteKeyFromHost) ? "site '" + siteKey + "'" : null;
     }
 
     private static Set<String> setOf(String... values) {

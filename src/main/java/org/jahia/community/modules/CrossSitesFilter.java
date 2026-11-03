@@ -1,19 +1,14 @@
 package org.jahia.community.modules;
 
 import org.apache.commons.lang.StringUtils;
-import org.jahia.api.Constants;
 import org.jahia.bin.filters.AbstractServletFilter;
-import org.jahia.exceptions.JahiaException;
-import org.jahia.services.content.JCRSessionFactory;
-import org.jahia.services.sites.JahiaSitesService;
 import org.jahia.community.modules.SearchParameterCheck.ParameterViolation;
-import org.jahia.utils.Url;
+import org.jahia.services.sites.JahiaSitesService;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.jcr.RepositoryException;
 import javax.servlet.DispatcherType;
 import javax.servlet.FilterChain;
 import javax.servlet.FilterConfig;
@@ -24,18 +19,13 @@ import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
 
 /**
  * Answers 404 to a request whose path addresses the live content of one site while the request's
@@ -67,10 +57,7 @@ import java.util.regex.Pattern;
  *       {@code /sites/{}digitall/} would address digitall while reading as an unknown key here. The
  *       authoring test runs on the path as received, so {@code /cms/render/{}default/} is never
  *       mistaken for authoring.</li>
- *   <li>the hostname is normalised (every trailing dot stripped, so {@code siteb.example.} is
- *       {@code siteb.example}) and resolved here through {@link JahiaSitesService}. The request
- *       attribute cached by {@code ServerNameToSiteMapper} is neither read nor written, so this
- *       filter cannot poison what Jahia's own rewrite rules see.</li>
+ *   <li>the hostname is normalised and resolved as described in {@link SiteDirectory}.</li>
  * </ul>
  *
  * <p>Once the path passes, the request parameters that select a site are checked against the same
@@ -109,6 +96,13 @@ import java.util.regex.Pattern;
  * no site (a bare IP, an internal load-balancer name) or is localhost. That is documented
  * fail-open behaviour and not something this filter can tighten.
  *
+ * <p>This is the first of two layers. {@link CrossSitesRenderFilter}, in the render chain, refuses a
+ * live main resource by what Jahia actually resolved; this servlet filter covers what never reaches
+ * the render chain ({@code /files}, {@code /repository}, actions, search hits that a JSP prints) and
+ * refuses rendered URLs earlier, from their string form. The shared pieces live in
+ * {@link SiteDirectory} (hostname and site list), {@link SitePaths}, {@link SiteIdentifiers},
+ * {@link SearchParameterCheck}, {@link FailureTracker} and {@link LogValues}.
+ *
  * <p>Order 0.5 is deliberate: after the Shiro filter (-3) and the JCR session filter (-1), which
  * must have run before any site or content lookup, and before the {@code UrlRewriteFilter} (1), so
  * that a foreign path is refused before the rewrite rules or the renderer touch it. Those orders are
@@ -120,74 +114,25 @@ public class CrossSitesFilter extends AbstractServletFilter {
 
     private static final Logger DEFAULT_LOGGER = LoggerFactory.getLogger(CrossSitesFilter.class);
 
-    static final String SITES_PATH_PART = JahiaSitesService.SITES_JCR_PATH + '/';
-
-    /**
-     * Authoring / default-workspace paths: /cms/{edit,editframe,render,contribute,...}/default,
-     * /repository/default, /files/default. FileServlet maps the CKEditor placeholder workspace
-     * {workspace} to the default (edit) workspace, so /files/{workspace} is exempt as well.
-     */
-    private static final Pattern AUTHORING_PATH = Pattern.compile(
-            "^/(?:(?:cms/[^/]+|repository)/default|files/(?:default|\\{workspace\\}))(?:/|$)");
-
-    /** ASCII and C1 controls (incl. NEL U+0085), Unicode format characters (bidi overrides, zero-width) and the line and paragraph separators. */
-    private static final Pattern LOG_UNSAFE_CHARS = Pattern.compile("[\\p{Cc}\\p{Cf}\\u2028\\u2029]");
-
     /** Request parameter {@code org.jahia.bin.Render} reads to swap the render-context site. */
     static final String JSITE_PARAMETER = "jsite";
 
-    /** Name of the repository node every site lives under ({@code /sites}). */
-    static final String SITES_NODE_NAME = "sites";
-
-    /** Servlets whose URL is {@code /<servlet>/<workspace>} followed by a JCR path. */
-    private static final Set<String> WORKSPACE_SERVLETS =
-            Collections.unmodifiableSet(new HashSet<>(Arrays.asList("files", "repository")));
-    /** Reason logged when a lookup throws. */
-    private static final String LOOKUP_FAILED = "failed";
-
-    private static final int MAX_LOGGED_LENGTH = 512;
-    private static final String SITE_KEY_ATTRIBUTE = "siteKey";
-    private static final long REWARN_INTERVAL_MILLIS = TimeUnit.MINUTES.toMillis(10);
-
-    /** Seam over {@link JahiaSitesService#getSitenameByServerName(String)}, which throws a checked exception. */
-    @FunctionalInterface
-    interface ServerNameLookup {
-        String siteKeyFor(String serverName) throws JahiaException;
-    }
-
-    /** Seam over reading a site node's JCR identifier, the value {@code jsite} carries. */
-    @FunctionalInterface
-    interface SiteIdLookup {
-        /** @return the identifier of the site node, or null when there is none */
-        String siteIdFor(String siteKey) throws RepositoryException;
-    }
-
-    private final Supplier<? extends Collection<String>> siteNames;
-    private final ServerNameLookup serverNameLookup;
-    private final SiteIdLookup siteIdLookup;
+    private final SiteDirectory directory;
+    private final SiteIdentifiers siteIdentifiers;
     private final Logger logger;
-    private final FailureTracker siteListFailure;
-    private final FailureTracker hostLookupFailure;
-    private final FailureTracker siteIdLookupFailure;
-    /** Site key to site-node identifier; bounded by the number of sites, keys come from Jahia only. */
-    private final Map<String, String> siteIds = new ConcurrentHashMap<>();
 
     /** Required by OSGi DS: wires the real Jahia services. */
     public CrossSitesFilter() {
         this(() -> JahiaSitesService.getInstance().getSitesNames(),
                 host -> JahiaSitesService.getInstance().getSitenameByServerName(host),
-                CrossSitesFilter::readSiteId, DEFAULT_LOGGER, System::currentTimeMillis);
+                SiteIdentifiers::readSiteId, DEFAULT_LOGGER, System::currentTimeMillis);
     }
 
-    CrossSitesFilter(Supplier<? extends Collection<String>> siteNames, ServerNameLookup serverNameLookup,
-                     SiteIdLookup siteIdLookup, Logger logger, LongSupplier clockMillis) {
-        this.siteNames = siteNames;
-        this.serverNameLookup = serverNameLookup;
-        this.siteIdLookup = siteIdLookup;
+    CrossSitesFilter(Supplier<? extends Collection<String>> siteNames, SiteDirectory.ServerNameLookup serverNameLookup,
+                     SiteIdentifiers.SiteIdLookup siteIdLookup, Logger logger, LongSupplier clockMillis) {
+        this.directory = new SiteDirectory(siteNames, serverNameLookup, logger, clockMillis);
+        this.siteIdentifiers = new SiteIdentifiers(siteIdLookup, logger, clockMillis);
         this.logger = logger;
-        this.siteListFailure = new FailureTracker("the site list", logger, clockMillis);
-        this.hostLookupFailure = new FailureTracker("the hostname-to-site lookup", logger, clockMillis);
-        this.siteIdLookupFailure = new FailureTracker("the site-identifier lookup", logger, clockMillis);
         setMatchAllUrls(true);
         setOrder(0.5f);
         final Set<String> types = new HashSet<>();
@@ -215,12 +160,12 @@ public class CrossSitesFilter extends AbstractServletFilter {
         // Error pages are rendered by Jahia on behalf of a request already refused or failed.
         final boolean isErrorDispatch = httpRequest.getAttribute(RequestDispatcher.ERROR_STATUS_CODE) != null;
 
-        if (!isErrorDispatch && !isAuthoringPath(path)) {
-            final HostSite hostSite = new HostSite(httpRequest);
+        if (!isErrorDispatch && !SitePaths.isAuthoringPath(path)) {
+            final SiteDirectory.HostSite hostSite = new SiteDirectory.HostSite(directory, httpRequest);
             if (isBlockedByPath(httpRequest, path, hostSite) || isBlockedByParameter(httpRequest, path, hostSite)) {
                 // ErrorServlet reads this attribute before it resolves the URL: without it the
                 // 404 page would carry the branding and language of the site in the path.
-                httpRequest.setAttribute(SITE_KEY_ATTRIBUTE, hostSite.siteKey());
+                httpRequest.setAttribute(SiteDirectory.SITE_KEY_ATTRIBUTE, hostSite.siteKey());
                 ((HttpServletResponse) response).sendError(HttpServletResponse.SC_NOT_FOUND);
                 return;
             }
@@ -229,11 +174,11 @@ public class CrossSitesFilter extends AbstractServletFilter {
         chain.doFilter(request, response);
     }
 
-    private boolean isBlockedByPath(HttpServletRequest httpRequest, String path, HostSite hostSite) {
-        final String jcrPath = normalizeJcrPath(path);
-        final String siteKeyFromPath = jcrPath.contains(SITES_PATH_PART)
-                ? resolveSiteKeyFromPath(jcrPath, readSiteNames()) : null;
-        final boolean isSitesRoot = siteKeyFromPath == null && addressesSitesRoot(jcrPath);
+    private boolean isBlockedByPath(HttpServletRequest httpRequest, String path, SiteDirectory.HostSite hostSite) {
+        final String jcrPath = SitePaths.normalizeJcrPath(path);
+        final String siteKeyFromPath = jcrPath.contains(SitePaths.SITES_PATH_PART)
+                ? SitePaths.resolveSiteKeyFromPath(jcrPath, directory.siteNames()) : null;
+        final boolean isSitesRoot = siteKeyFromPath == null && SitePaths.addressesSitesRoot(jcrPath);
 
         // systemsite holds the content Jahia shares across every site, so a reference to it
         // from any site is legitimate by definition and must not be read as a foreign site.
@@ -248,61 +193,11 @@ public class CrossSitesFilter extends AbstractServletFilter {
             // Placeholder arguments are not escaped by SLF4J and the host and path are
             // attacker-chosen, so each one is sanitised (and the path capped) first.
             logger.info("Blocked cross-site access: path addresses {} but hostname '{}' maps to site '{}', path: {}, referer: {}",
-                    isSitesRoot ? "the sites root '" + JahiaSitesService.SITES_JCR_PATH + "'" : "site '" + sanitise(siteKeyFromPath) + "'",
-                    sanitise(hostSite.host()), sanitise(siteKeyFromHost),
-                    sanitise(abbreviate(path)), describeReferer(httpRequest.getHeader("Referer")));
+                    isSitesRoot ? "the sites root '" + JahiaSitesService.SITES_JCR_PATH + "'" : "site '" + LogValues.sanitise(siteKeyFromPath) + "'",
+                    LogValues.sanitise(hostSite.host()), LogValues.sanitise(siteKeyFromHost),
+                    LogValues.safe(path), LogValues.describeReferer(httpRequest.getHeader("Referer")));
         }
         return true;
-    }
-
-    /**
-     * Whether the first {@code sites} segment of a normalised path is the {@code /sites} node itself,
-     * at the start of the JCR path: {@code /sites}, {@code /sites.<ext...>} or {@code /sites/.<ext...>}.
-     * Called only when no site key resolved, so {@code /sites/<own>/home/sites.html} never gets here.
-     */
-    static boolean addressesSitesRoot(String jcrPath) {
-        final String root = JahiaSitesService.SITES_JCR_PATH;
-        int at = jcrPath.indexOf(root);
-        while (at >= 0) {
-            final String rest = jcrPath.substring(at + root.length());
-            if (rest.isEmpty() || rest.charAt(0) == '.' || rest.charAt(0) == '/') {
-                final boolean isNodeItself = rest.isEmpty() || rest.charAt(0) == '.' || rest.equals("/") || rest.startsWith("/.");
-                return isNodeItself && isUrlPrefixBeforeJcrPath(jcrPath.substring(0, at));
-            }
-            at = jcrPath.indexOf(root, at + 1);
-        }
-        return false;
-    }
-
-    /**
-     * Path prefixes a JCR path follows in a URL: {@code /cms/<servlet>/<workspace>[/<lang>]},
-     * {@code /files/<workspace>}, {@code /repository/<workspace>}, the SEO {@code /<lang>}, or none.
-     * Every segment of the prefix is non-empty.
-     */
-    private static boolean isUrlPrefixBeforeJcrPath(String prefix) {
-        if (prefix.isEmpty()) {
-            return true;
-        }
-        if (prefix.charAt(0) != '/') {
-            return false;
-        }
-        final String[] segments = prefix.substring(1).split("/", -1);
-        for (String segment : segments) {
-            if (segment.isEmpty()) {
-                return false;
-            }
-        }
-        switch (segments.length) {
-            case 1:
-                return true;
-            case 2:
-                return WORKSPACE_SERVLETS.contains(segments[0]);
-            case 3:
-            case 4:
-                return "cms".equals(segments[0]);
-            default:
-                return false;
-        }
     }
 
     /**
@@ -314,7 +209,7 @@ public class CrossSitesFilter extends AbstractServletFilter {
      * JSON and multipart bodies are not parsed by {@code getParameter}, and Jahia's renderer does not
      * feed multipart fields to {@code jsite} or to the search criteria either.
      */
-    private boolean isBlockedByParameter(HttpServletRequest httpRequest, String path, HostSite hostSite) {
+    private boolean isBlockedByParameter(HttpServletRequest httpRequest, String path, SiteDirectory.HostSite hostSite) {
         final Map<String, String[]> parameters = httpRequest.getParameterMap();
         if (parameters == null || !hasSiteSelectingParameter(parameters.keySet())) {
             return false;
@@ -325,18 +220,18 @@ public class CrossSitesFilter extends AbstractServletFilter {
         }
         ParameterViolation violation = findJsiteViolation(parameters.get(JSITE_PARAMETER), siteKeyFromHost);
         if (violation == null) {
-            final Collection<String> sites = readSiteNames();
+            final Collection<String> sites = directory.siteNames();
             // No site list means "resolve no site", as for the path: the search is left to Jahia.
-            violation = sites.isEmpty() ? null : SearchParameterCheck.findViolation(parameters, toSet(sites), siteKeyFromHost);
+            violation = sites.isEmpty() ? null : SearchParameterCheck.findViolation(parameters, SiteDirectory.toSet(sites), siteKeyFromHost);
         }
         if (violation == null) {
             return false;
         }
         if (logger.isInfoEnabled()) {
             logger.info("Blocked cross-site access: parameter '{}' selects {} but hostname '{}' maps to site '{}', path: {}, referer: {}",
-                    sanitise(abbreviate(violation.parameter)), sanitise(abbreviate(violation.target)),
-                    sanitise(hostSite.host()), sanitise(siteKeyFromHost), sanitise(abbreviate(path)),
-                    describeReferer(httpRequest.getHeader("Referer")));
+                    LogValues.safe(violation.parameter), LogValues.safe(violation.target),
+                    LogValues.sanitise(hostSite.host()), LogValues.sanitise(siteKeyFromHost), LogValues.safe(path),
+                    LogValues.describeReferer(httpRequest.getHeader("Referer")));
         }
         return true;
     }
@@ -357,55 +252,11 @@ public class CrossSitesFilter extends AbstractServletFilter {
         }
         for (String value : values) {
             // A blank jsite selects no site: Render fails on it with an error of its own.
-            if (StringUtils.isNotBlank(value) && !isAllowedSiteId(value, siteKeyFromHost)) {
+            if (StringUtils.isNotBlank(value) && !siteIdentifiers.isAllowedSiteId(value, siteKeyFromHost)) {
                 return new ParameterViolation(JSITE_PARAMETER, "site node '" + value + "'");
             }
         }
         return null;
-    }
-
-    /** Fails open, like the other lookups: an unreadable identifier lets the request through, with a WARN. */
-    private boolean isAllowedSiteId(String id, String siteKeyFromHost) {
-        try {
-            final boolean allowed = isSiteId(id, siteKeyFromHost) || isSiteId(id, JahiaSitesService.SYSTEM_SITE_KEY);
-            siteIdLookupFailure.succeeded();
-            return allowed;
-        } catch (RepositoryException | RuntimeException e) {
-            siteIdLookupFailure.failed(LOOKUP_FAILED, e);
-            return true;
-        }
-    }
-
-    /**
-     * Served from the cache when it matches; anything else is re-read once before it is refused, so a
-     * site deleted and re-created under the same key is recognised with its new identifier. JCR
-     * identifiers are hexadecimal UUIDs, so letter case does not distinguish two nodes.
-     */
-    private boolean isSiteId(String id, String siteKey) throws RepositoryException {
-        if (id.equalsIgnoreCase(siteIds.get(siteKey))) {
-            return true;
-        }
-        final String current = siteIdLookup.siteIdFor(siteKey);
-        if (StringUtils.isEmpty(current)) {
-            throw new RepositoryException("no identifier for site " + siteKey);
-        }
-        siteIds.put(siteKey, current);
-        return id.equalsIgnoreCase(current);
-    }
-
-    /**
-     * The site node's identifier, read with Jahia's thread-bound system session (released by Jahia
-     * at the end of the request, as its own site caches do) so the visitor's ACLs cannot hide it.
-     * The site node keeps the same identifier in both workspaces.
-     */
-    private static String readSiteId(String siteKey) throws RepositoryException {
-        return JahiaSitesService.getInstance()
-                .getSiteByKey(siteKey, JCRSessionFactory.getInstance().getCurrentSystemSession(Constants.LIVE_WORKSPACE, null, null))
-                .getIdentifier();
-    }
-
-    private static Set<String> toSet(Collection<String> names) {
-        return names instanceof Set ? (Set<String>) names : new HashSet<>(names);
     }
 
     /**
@@ -417,222 +268,20 @@ public class CrossSitesFilter extends AbstractServletFilter {
         return StringUtils.defaultString(request.getServletPath()) + StringUtils.defaultString(request.getPathInfo());
     }
 
-    static boolean isAuthoringPath(String path) {
-        return path != null && AUTHORING_PATH.matcher(path).find();
-    }
-
-    /**
-     * The path as the renderer will read it. JCR reads one leading {@code {}} (empty namespace) on a
-     * path segment as no marker at all; not recursive on purpose, {@code {}{}x} becomes {@code {}x},
-     * which JCR rejects too. Then, in the renderer's order, one trailing "/" goes
-     * ({@code URLResolver#normalizeUrlPathInfo}) and a trailing "/*" goes ({@code resolveNode}).
-     */
-    static String normalizeJcrPath(String path) {
-        String result = StringUtils.defaultString(path).replace("/{}", "/");
-        if (result.endsWith("/")) {
-            result = result.substring(0, result.length() - 1);
-        }
-        if (result.endsWith("/*")) {
-            result = result.substring(0, result.length() - 2);
-        }
-        return result;
-    }
-
-    /** Strips every trailing dot: "siteb.example." and "siteb.example" are the same host. */
-    static String normalizeServerName(String serverName) {
-        String host = StringUtils.defaultString(serverName);
-        int end = host.length();
-        while (end > 0 && host.charAt(end - 1) == '.') {
-            end--;
-        }
-        return host.substring(0, end);
-    }
-
-    /**
-     * Mirrors {@code URLResolver#resolveSiteKeyFromPath} (jahia-impl 8.2.2.1), narrowed to keys
-     * that name an existing site.
-     *
-     * @return the site the path addresses, or null if it addresses none
-     */
-    static String resolveSiteKeyFromPath(String path, Collection<String> existingSites) {
-        if (path == null || existingSites == null || existingSites.isEmpty()
-                || !path.contains(SITES_PATH_PART)) {
-            return null;
-        }
-        final Set<String> sites = toSet(existingSites);
-
-        // ".../sites/<key>/..." - the common case.
-        final String keyBetweenSlashes = StringUtils.substringBetween(path, SITES_PATH_PART, "/");
-        if (StringUtils.isNotEmpty(keyBetweenSlashes)) {
-            return sites.contains(keyBetweenSlashes) ? keyBetweenSlashes : null;
-        }
-
-        // ".../sites/<key>", ".../sites/<key>.<type>" or ".../sites/<key>.<template>.<type>".
-        // A site key may itself contain a dot, so where the key ends cannot be decided by looking
-        // at the string: the candidates (the whole ending, then each cut at a dot) are tried
-        // against the real sites, longest first. The path is attacker-chosen, so candidates longer
-        // than the longest site name are skipped without allocating them.
-        final String pathEnding = StringUtils.substringAfter(path, SITES_PATH_PART);
-        final int longestName = sites.stream().mapToInt(String::length).max().orElse(0);
-        int end = pathEnding.length();
-        while (end > 0) {
-            if (end <= longestName && sites.contains(pathEnding.substring(0, end))) {
-                return pathEnding.substring(0, end);
-            }
-            end = pathEnding.lastIndexOf('.', end - 1);
-        }
-        return null;
-    }
-
-    /**
-     * Cache-backed in Jahia, so cheap enough per request. It can still fail while the repository is
-     * starting, and a filter that threw there would take every request down with it; no list means
-     * "resolve no site", which leaves the request to Jahia.
-     */
-    private Collection<String> readSiteNames() {
-        try {
-            final Collection<String> names = siteNames.get();
-            if (names == null || names.isEmpty()) {
-                // Jahia always has at least systemsite, so an empty list is as unusable as null.
-                siteListFailure.failed(names == null ? "returned null" : "returned no site", null);
-                return Collections.emptyList();
-            }
-            siteListFailure.succeeded();
-            return names;
-        } catch (RuntimeException e) {
-            siteListFailure.failed(LOOKUP_FAILED, e);
-            return Collections.emptyList();
-        }
-    }
-
-    private static String sanitise(String message) {
-        return LOG_UNSAFE_CHARS.matcher(message).replaceAll("?");
-    }
-
-    /** The path is attacker-chosen, so only a bounded prefix goes to the log; a surrogate pair is never cut. */
-    private static String abbreviate(String text) {
-        if (text.length() <= MAX_LOGGED_LENGTH) {
-            return text;
-        }
-        final int cut = Character.isHighSurrogate(text.charAt(MAX_LOGGED_LENGTH - 1)) ? MAX_LOGGED_LENGTH - 1 : MAX_LOGGED_LENGTH;
-        return text.substring(0, cut) + "\u2026";
-    }
-
-    /** The page embedding a cross-site link, so an admin can find it; "-" when the browser sent none. */
-    private static String describeReferer(String referer) {
-        return StringUtils.isEmpty(referer) ? "-" : sanitise(abbreviate(referer));
-    }
-
     boolean isSiteListFailing() {
-        return siteListFailure.isFailing();
+        return directory.isSiteListFailing();
     }
 
     boolean isHostLookupFailing() {
-        return hostLookupFailure.isFailing();
+        return directory.isHostLookupFailing();
     }
 
     boolean isSiteIdLookupFailing() {
-        return siteIdLookupFailure.isFailing();
-    }
-
-    /** The request's hostname and its site, looked up at most once per request and only when needed. */
-    private final class HostSite {
-        private final HttpServletRequest request;
-        private String host;
-        private String siteKey;
-        private boolean isResolved;
-
-        HostSite(HttpServletRequest request) {
-            this.request = request;
-        }
-
-        String host() {
-            siteKey();
-            return host;
-        }
-
-        String siteKey() {
-            if (!isResolved) {
-                host = normalizeServerName(request.getServerName());
-                siteKey = resolveSiteKeyFromHost(host);
-                isResolved = true;
-            }
-            return siteKey;
-        }
-
-        private String resolveSiteKeyFromHost(String serverName) {
-            if (serverName.isEmpty() || Url.isLocalhost(serverName)) {
-                return null;
-            }
-            try {
-                final String key = serverNameLookup.siteKeyFor(serverName);
-                hostLookupFailure.succeeded();
-                if (StringUtils.isEmpty(key) && logger.isDebugEnabled()) {
-                    logger.debug("Hostname '{}' maps to no site, cross-site check skipped", sanitise(serverName));
-                }
-                return key;
-            } catch (JahiaException | RuntimeException e) {
-                hostLookupFailure.failed(LOOKUP_FAILED, e);
-                return null;
-            }
-        }
+        return siteIdentifiers.isFailing();
     }
 
     @Override
     public void destroy() {
         // Nothing to release.
-    }
-
-    /**
-     * WARN on the transition to failing and again at most every ten minutes while it lasts, INFO on
-     * recovery, DEBUG in between.
-     */
-    private static final class FailureTracker {
-        private final String what;
-        private final Logger logger;
-        private final LongSupplier clockMillis;
-        // volatile: succeeded() runs on every /sites/ request and the healthy case must take no lock.
-        private volatile boolean failing;
-        private long lastWarnMillis;
-
-        FailureTracker(String what, Logger logger, LongSupplier clockMillis) {
-            this.what = what;
-            this.logger = logger;
-            this.clockMillis = clockMillis;
-        }
-
-        synchronized void failed(String reason, Exception cause) {
-            final String format = "Reading {} {}, letting requests through unchecked";
-            final long now = clockMillis.getAsLong();
-            if (!failing || now - lastWarnMillis >= REWARN_INTERVAL_MILLIS) {
-                failing = true;
-                lastWarnMillis = now;
-                if (cause != null) {
-                    logger.warn(format, what, reason, cause);
-                } else {
-                    logger.warn(format, what, reason);
-                }
-            } else if (cause != null) {
-                logger.debug(format, what, reason, cause);
-            } else {
-                logger.debug(format, what, reason);
-            }
-        }
-
-        void succeeded() {
-            if (!failing) {
-                return;
-            }
-            synchronized (this) {
-                if (failing) {
-                    failing = false;
-                    logger.info("Reading {} recovered, cross-site checks are effective again", what);
-                }
-            }
-        }
-
-        boolean isFailing() {
-            return failing;
-        }
     }
 }
