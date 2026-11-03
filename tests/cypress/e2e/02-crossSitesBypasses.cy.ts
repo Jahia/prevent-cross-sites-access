@@ -82,7 +82,7 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
     });
 
     it('still serves cross-site shared content stored under systemsite', () => {
-        // systemsite is where Jahia keeps content shared by every site. Treating its key as "a
+        // Jahia keeps the content shared by every site under systemsite. Treating its key as "a
         // different site" made shared media 400 on each site that referenced it.
         const path = '/files/live/sites/systemsite/files';
 

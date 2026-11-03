@@ -10,7 +10,7 @@ import {createSite, editSite, publishAndWaitJobEnding} from '@jahia/cypress';
 
 /** Host/port the Jahia container is reachable on. Only a transport detail - never an assertion input. */
 export const JAHIA_HOST: string = (Cypress.env('JAHIA_HOST') as string) || 'jahia';
-export const JAHIA_PORT: number = Number(Cypress.env('JAHIA_PORT') || 8080);
+export const JAHIA_PORT = Number(Cypress.env('JAHIA_PORT') || 8080);
 
 /** The site the specs map a hostname to. */
 export const SITE_KEY = 'digitall';
