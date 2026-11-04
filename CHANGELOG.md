@@ -1,6 +1,6 @@
 # Changelog
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-11-04
 
 A major version: this release raises the minimum Jahia version (8.1.0.0 to 8.2.3.2) and the Java requirement (8 to 11), and changes the response to a blocked request (400 to 404).
 
