@@ -56,7 +56,11 @@ import java.util.regex.Pattern;
  *   <li><b>Scope.</b> {@code filePath}, else {@code pagePath}, else {@code sites} plus
  *       {@code sitesForReferences}; with none of them the query has no scope. {@code -all-} as the first
  *       site is every site. {@code ResultsTag#getSearchCriteria} replaces a page path outside
- *       {@code /sites/} with {@code /sites/}.</li>
+ *       {@code /sites/} with {@code /sites/}. Only some spellings set a scope: {@code src_sites}, {@code .value},
+ *       {@code .values} and {@code .values[n]}; {@code src_pagePath} and {@code src_filePath} bare or
+ *       with {@code .value}. Measured on 8.2.3.2, {@code src_sites.zz}, {@code src_sites(x)},
+ *       {@code src_sites.Values} and {@code src_pagePath.values} leave the search unscoped, so they
+ *       do not count as a scope here.</li>
  * </ol>
  *
  * <p>Where the parsers are lax the check over-approximates: each parameter is judged as if BeanUtils
@@ -92,6 +96,16 @@ final class SearchParameterCheck {
     private static final Set<String> EVERY_SITE_TOKENS = setOf("-all-", "*", ".", "..");
 
     private static final Pattern SAME_NAME_SIBLING_INDEX = Pattern.compile("\\[\\d*\\]$");
+
+    /**
+     * The spellings that set the site list, measured on 8.2.3.2: bare, {@code .value}, {@code .values}
+     * and {@code .values[n]}. An unknown sub-property ({@code sites.zz}), a mapped form
+     * ({@code sites(x)}) or another case ({@code sites.Values}) is skipped by BeanUtils and sets nothing.
+     */
+    private static final Pattern SITES_SCOPE_SETTER = Pattern.compile("sites(?:\\.value|\\.values(?:\\[\\d+\\])?)?");
+
+    /** A path property sets the scope bare or through {@code .value}; the provider reads no other part. */
+    private static final String PATH_VALUE_SUFFIX = ".value";
 
     /**
      * The {@code SearchCriteria} bean properties of jahia-impl 8.2.3.2, read or write, as
@@ -199,8 +213,10 @@ final class SearchParameterCheck {
     }
 
     /**
-     * Some scope property is set by every parameter that names it, so whichever BeanUtils applies last
+     * Some scope property is set by every parameter that sets it, so whichever BeanUtils applies last
      * leaves a scope on the query. A path is only the scope when non-empty, else the provider falls back.
+     * Only a spelling Jahia applies counts ({@link #setsScope}): any other spelling of a scope property
+     * leaves the query unscoped, though {@link #scopeViolation} still judges the sites it names.
      */
     private static boolean isScoped(Map<String, String[]> parameters) {
         for (String scopeProperty : PATH_PROPERTIES) {
@@ -215,7 +231,7 @@ final class SearchParameterCheck {
         boolean isNamed = false;
         for (Map.Entry<String, String[]> parameter : parameters.entrySet()) {
             final String name = parameter.getKey();
-            if (isSearchParameter(name) && scopeProperty.equals(property(name)) && !name.endsWith(INCLUDE_CHILDREN_SUFFIX)) {
+            if (isSearchParameter(name) && setsScope(name, scopeProperty)) {
                 if (!hasNonBlank(elements(parameter.getValue()))) {
                     return false;
                 }
@@ -223,6 +239,15 @@ final class SearchParameterCheck {
             }
         }
         return isNamed;
+    }
+
+    /** Whether the parameter is one of the spellings that set {@code scopeProperty} as the query's scope. */
+    static boolean setsScope(String name, String scopeProperty) {
+        final String expression = name.substring(SEARCH_PARAMETER_PREFIX.length());
+        if (SITES_PROPERTY.equals(scopeProperty)) {
+            return SITES_SCOPE_SETTER.matcher(expression).matches();
+        }
+        return expression.equals(scopeProperty) || expression.equals(scopeProperty + PATH_VALUE_SUFFIX);
     }
 
     private static boolean isPathParameter(String name, String property) {

@@ -301,7 +301,48 @@ class CrossSitesFilterParameterTest {
                         "src_properties(jmix:categorized).j:defaultCategory.categoryValue.value=/sites/systemsite/categories&src_sites.values=-all-")),
                 Arguments.of(Named.of("date node property, no scope", "src_properties(jnt:news).date.dateValue.type=today")),
                 Arguments.of(Named.of("date node property, foreign page path",
-                        "src_properties(jnt:news).date.dateValue.type=today&src_pagePath.value=/sites/siteA")));
+                        "src_properties(jnt:news).date.dateValue.type=today&src_pagePath.value=/sites/siteA")),
+                // Spellings that name a scope property but set no scope: BeanUtils skips the unknown
+                // sub-property, and the provider reads a path's value only. Measured live on 8.2.3.2:
+                // each returned the other site's hits on the own hostname before the fix.
+                Arguments.of(Named.of("unknown sub-property of sites", "src_terms[0].term=company&src_sites.zz=siteB")),
+                Arguments.of(Named.of("mapped form of sites", "src_terms[0].term=company&src_sites(x)=siteB")),
+                Arguments.of(Named.of("sub-property names are case-sensitive", "src_terms[0].term=company&src_sites.Values=siteB")),
+                Arguments.of(Named.of("values of a page path", "src_terms[0].term=company&src_pagePath.values=/sites/siteB")),
+                Arguments.of(Named.of("values of a file path", "src_terms[0].term=company&src_filePath.values=/sites/siteB")),
+                Arguments.of(Named.of("unknown sub-property of a page path", "src_terms[0].term=company&src_pagePath.zz=/sites/siteB")));
+    }
+
+    private static Stream<Arguments> scopeSettingSpellings() {
+        // Each measured live on 8.2.3.2 to confine the search to the own site.
+        return Stream.of(
+                Arguments.of(Named.of("bare sites", "src_sites=siteB")),
+                Arguments.of(Named.of("sites value", "src_sites.value=siteB")),
+                Arguments.of(Named.of("sites values", "src_sites.values=siteB")),
+                Arguments.of(Named.of("indexed sites values", "src_sites.values[0]=siteB")),
+                Arguments.of(Named.of("bare page path", "src_pagePath=/sites/siteB")),
+                Arguments.of(Named.of("page path value", "src_pagePath.value=/sites/siteB")),
+                Arguments.of(Named.of("bare file path", "src_filePath=/sites/siteB/files")),
+                Arguments.of(Named.of("file path value", "src_filePath.value=/sites/siteB/files")));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("scopeSettingSpellings")
+    @DisplayName("a term search confined by a spelling Jahia applies as the scope passes")
+    void doFilter_termSearchWithScopeSettingSpelling_passes(String scope) throws Exception {
+        query("src_terms[0].term=company&src_languages.values=en&" + scope);
+        path(OWN_SEARCH_PATH);
+        run();
+        assertPassed();
+    }
+
+    @Test
+    @DisplayName("a spelling that sets no scope still has its values judged: a foreign site in it is refused")
+    void doFilter_nonScopeSpellingNamingForeignSite_blocked() throws Exception {
+        query("src_terms[0].term=company&src_sites.values=siteB&src_sites.zz=siteA");
+        path(OWN_SEARCH_PATH);
+        run();
+        assertBlocked();
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
