@@ -83,13 +83,13 @@ Not assessed for the error page: contrast (1.4.3, 1.4.6), reflow (1.4.10), focus
 - **Jahia:** 8.2.3.2 or later. The bundle declares `Jahia-Required-Version: 8.2.3.2` and is built against the `jahia-modules` parent 8.2.3.2. It does not install on earlier Jahia versions.
 - **Java:** the bundle targets Java 11. Build with JDK 11 or later.
 - **Tested end to end** on Jahia 8-SNAPSHOT and 8.2.3.2 for the current change set (all 36 Cypress tests green on both, with both layers active). Earlier measurements, made before the current parent, also covered 8.2.3.7.
-- **Build:** `mvn clean install` at the repository root produces `target/prevent-cross-sites-access-1.0.1-SNAPSHOT.jar`. The unit tests run as part of the build and need no Docker. The tests use Java 11 APIs and Mockito 5. The released manifest does not carry `Jahia-Source-Folders`, so the builder's checkout path is not published (the parent's header is removed in `pom.xml`).
+- **Build:** `mvn clean install` at the repository root produces `target/prevent-cross-sites-access-2.0.0-SNAPSHOT.jar`. The unit tests run as part of the build and need no Docker. The tests use Java 11 APIs and Mockito 5. The released manifest does not carry `Jahia-Source-Folders`, so the builder's checkout path is not published (the parent's header is removed in `pom.xml`).
 - **Deploy:** install the jar as any other Jahia 8 module (Module Manager upload, or the modules deploy directory of your installation). No site or module settings are needed.
 - **Disabling:** stop the bundle (`Bundle-Name: Prevent Cross Sites Access`, symbolic name `prevent-cross-sites-access`). Both layers are in this bundle, so stopping it disables both. There is no other switch.
 
 ## Upgrading from 1.0.0
 
-1.0.0 is the only released tag. It was built against the `jahia-modules` parent 8.1.0.0 and installs on Jahia 8.1 and later. The differences below are from that release to the current 1.0.1-SNAPSHOT.
+1.0.0 is the only released tag. It was built against the `jahia-modules` parent 8.1.0.0 and installs on Jahia 8.1 and later. The differences below are from that release to 2.0.0.
 
 - **Minimum Jahia version: 8.1 became 8.2.3.2.** The bundle now declares `Jahia-Required-Version: 8.2.3.2` and targets Java 11. Installations below 8.2.3.2 must stay on 1.0.0 or upgrade Jahia first.
 - **Status of a block: 400 became 404.** 1.0.0 answered 400, which revealed which site keys exist. Anyone alerting or monitoring on 400 from this module will stop seeing it; a block is now only visible in the log.

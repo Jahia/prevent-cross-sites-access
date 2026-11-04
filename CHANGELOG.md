@@ -1,8 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - Unreleased
 
-> **Version not chosen.** A maintainer must pick the release number before tagging. The pom says `1.0.1-SNAPSHOT`, but this release raises the minimum Jahia version (8.1.0.0 to 8.2.3.2) and the Java requirement (8 to 11), and changes the response to a blocked request (400 to 404). Under semantic versioning, a change that breaks existing installs and monitoring argues for `2.0.0`. The choice is the maintainer's.
+A major version: this release raises the minimum Jahia version (8.1.0.0 to 8.2.3.2) and the Java requirement (8 to 11), and changes the response to a blocked request (400 to 404).
 
 ### Breaking changes / upgrade notes
 
