@@ -32,14 +32,14 @@ The authoritative text is the Javadoc of `CrossSitesFilter` and the README secti
 ## Rules when changing the filter
 
 1. **Mirror the renderer, for layer 1.** Any change to how a path, parameter or site key is parsed must be checked against the Jahia source it mirrors (the Javadoc names the classes and the version, jahia-impl 8.2.2.1), and against a live stack on 8.2.3.2 and on the default image. Layer 2 reads no string, so this rule does not apply to it. Record the measured bypass in the commit message.
-2. **Every block does the same things, in this order, on either layer:** one INFO line (sanitised), `setAttribute("siteKey", <the hostname's site>)`, then the refusal. On layer 1 the refusal is `sendError(404)` followed by `return`, without calling the chain. On layer 2 it is `throw new PathNotFoundException`, which Jahia turns into a 404. Do not add a third exit path.
+2. **Every block does the same things, in this order, on either layer:** one INFO line (sanitised), `setAttribute("siteKey", <the hostname's site>)`, then the refusal. The one exception is a `jarea` refused on an unmapped hostname, which has no site: there `siteKey` is the page's own site. On layer 1 the refusal is `sendError(404)` followed by `return`, without calling the chain. On layer 2 it is `throw new PathNotFoundException`, which Jahia turns into a 404. Do not add a third exit path.
 3. **Fail open, rate-limited.** A failing lookup (site list, hostname, site identifier) must not throw into the request. It lets the request through, logs one WARN, then at most one WARN every 10 minutes, and one INFO on recovery. An empty site list counts as a failure. Use `FailureTracker`; do not write a new one.
 4. **Sanitise and cap everything logged.** Host, path, referer, parameter names and values go through the shared `LogValues` (`sanitise`: control, format and line-separator characters become `?`; `abbreviate`: 512 characters, never splitting a surrogate pair; `safe` does both). Log with SLF4J placeholders and sanitised arguments.
 5. **Read only what the renderer reads.** Parameters come from `getParameterMap()`. Never read the request body. Do not read or write the request attribute that `ServerNameToSiteMapper` caches.
 6. **Keep the registration.** Order 0.5, REQUEST and FORWARD dispatches. The orders of the surrounding filters are defined in jahia-impl's `applicationcontext-basejahiaconfig.xml`; re-check them when moving to a new Jahia line.
 7. **Java 11 and Jahia 8.2.3.2.** The bundle declares `Jahia-Required-Version: 8.2.3.2` and targets Java 11. Do not use newer APIs.
-8. **Judge the scope of every potential search. Never mirror Jahia's emptiness rule** (`SearchCriteria#isEmpty`): iteration 2 did, missed node-property criteria, and reopened the channel. Criteria names come from `SearchCriteria` at runtime; unknown and blank values are ignored, as BeanUtils and the provider ignore them. The rules live in `SearchParameterCheck`.
-9. **Keep the existing semantics.** `systemsite` is always allowed. An unknown key is not a cross-site target. An unmapped hostname, `localhost` or an empty hostname means no check (documented fail-open).
+8. **Judge the scope of every potential search. Never mirror Jahia's emptiness rule** (`SearchCriteria#isEmpty`): iteration 2 did, missed node-property criteria, and reopened the channel. Criteria names come from `SearchCriteria` at runtime; unknown and blank values are ignored, as BeanUtils and the provider ignore them. A scope counts only through a spelling Jahia applies (`SearchParameterCheck#setsScope`, measured on 8.2.3.2); crediting any parameter whose property prefix matched let `src_sites.zz` and `src_pagePath.values` search every site. The rules live in `SearchParameterCheck`.
+9. **Keep the existing semantics.** `systemsite` is always allowed. An unknown key is not a cross-site target. An unmapped hostname, `localhost` or an empty hostname means no check (documented fail-open), except for `jarea` in layer 2: a node rendered there is cached under the page and served on its own hostname, so that check compares the node with the page's site on every hostname.
 10. **Keep both layers.** A change must keep both. Never move a check from layer 1 to layer 2 for a surface that never enters the render chain (`/files`, `/repository`, `*.do` actions, search hits printed by a JSP): layer 2 cannot see those. A check on a rendered page may go to layer 2 when it judges what Jahia resolved, and layer 1 keeps its string check for the surfaces above.
 
 ## Testing rules
@@ -66,10 +66,11 @@ The authoritative text is the Javadoc of `CrossSitesFilter` and the README secti
 - The `/sites` node (`/sites.html.ajax`, `/sites/.html.ajax`) names no site key. On 8.2.3.2 its view lists every site; on 8-SNAPSHOT it renders an empty body. The root-listing e2e test is therefore conditional on what the unguarded host reveals (`expectServedUnguardedThenBlocked`). A green run on 8-SNAPSHOT proves less for that test.
 - A top-level `/<one-segment>/sites.<ext>` looks like the SEO form and is blocked (known over-block).
 
+- Where the block lines are depends on the image: the 8.2.3.2 image writes the module's log to the container's stdout (`docker logs jahia`), the 8-SNAPSHOT image only to `/var/log/jahia/jahia.log` inside the container. An empty `docker logs` grep on 8-SNAPSHOT does not mean nothing was blocked.
 - The render layer refuses through `PathNotFoundException`. Its logs and its 404 page go through the same ErrorServlet path as layer 1, so the block line is the only way to tell the two apart. Its block line carries `(render layer)`; layer 1's does not.
 - Layer 2 checks the main resource only, on purpose. Content references and systemsite content included in a page are not checked.
 - `/files`, `/repository`, actions and JSP-printed search hits never reach the render chain: only layer 1 covers them.
-- `tests/` is 36 tests (19 in `01`, 17 in `02`). The suite has no test that disables a layer. The layer-by-layer separation was measured outside the suite on 8.2.3.2.
+- `tests/` is 44 tests (19 in `01`, 25 in `02`). The suite has no test that disables a layer. The layer-by-layer separation was measured outside the suite on 8.2.3.2.
 
 ## Decision: two layers, and what each one owns
 
@@ -88,7 +89,7 @@ History. The servlet layer was the whole filter until the render layer was added
 - a FORWARD pass that decodes a second time (`%2564`);
 - the JCR expanded-name form (`{}name`);
 - the renderer's handling of a trailing `/` and `/*`;
-- request parameters read by `Render` (`jsite`) and by the search module (`src_*`);
+- request parameters read by `Render` (`jsite`), by `TemplateAjaxFilter` (`jarea`, judged by the render layer on every hostname because the page cache ignores it) and by the search module (`src_*`);
 - the `/sites` node itself, which names no site key (`/sites.html.ajax`);
 - node-property search criteria (`src_properties(...)`), which a mirror of Jahia's emptiness rule did not list. That mirror was removed, and the scope of every potential search is judged instead.
 
