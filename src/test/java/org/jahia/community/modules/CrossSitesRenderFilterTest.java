@@ -2,6 +2,7 @@ package org.jahia.community.modules;
 
 import org.jahia.exceptions.JahiaException;
 import org.jahia.services.content.JCRNodeWrapper;
+import org.jahia.services.content.JCRSessionWrapper;
 import org.jahia.services.content.decorator.JCRSiteNode;
 import org.jahia.services.render.RenderContext;
 import org.jahia.services.render.Resource;
@@ -18,6 +19,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.Logger;
 import org.slf4j.helpers.MessageFormatter;
 
+import javax.jcr.ItemNotFoundException;
 import javax.jcr.PathNotFoundException;
 import javax.jcr.RepositoryException;
 import javax.servlet.RequestDispatcher;
@@ -302,5 +304,90 @@ class CrossSitesRenderFilterTest {
         assertBlocked();
         assertThat(logged("info")).hasSize(1).allMatch(m -> !m.contains("\n") && !m.contains("\r")
                 && !m.contains("‮") && !m.contains(" ") && !m.contains("p".repeat(513)) && !m.contains("r".repeat(513)));
+    }
+
+    // --- jarea: Jahia's TemplateAjaxFilter renders the node this UUID names inside the page ---------
+
+    private static final String AREA_ID = "4c1d4f0e-0000-4000-8000-000000000001";
+
+    /** The page is the main resource; `jarea` names a node at `areaPath` (null: no such node). */
+    private void pageWithArea(String pagePath, String areaPath) throws RepositoryException {
+        resolved(pagePath, pagePath.startsWith("/sites/siteA") ? "siteA" : "siteB", pagePath.startsWith("/sites/siteA") ? "siteA" : "siteB");
+        final JCRSessionWrapper session = mock(JCRSessionWrapper.class);
+        lenient().when(node.getSession()).thenReturn(session);
+        lenient().when(request.getParameter("jarea")).thenReturn(AREA_ID);
+        if (areaPath == null) {
+            lenient().when(session.getNodeByUUID(AREA_ID)).thenThrow(new ItemNotFoundException(AREA_ID));
+        } else {
+            final JCRNodeWrapper area = mock(JCRNodeWrapper.class);
+            lenient().when(area.getPath()).thenReturn(areaPath);
+            lenient().when(session.getNodeByUUID(AREA_ID)).thenReturn(area);
+        }
+    }
+
+    @Test
+    @DisplayName("jarea naming another site's node on the own page is refused, with the hostname's site as siteKey")
+    void prepare_jareaForeignNode_blocked() throws Exception {
+        pageWithArea("/sites/siteB/home", "/sites/siteA/home/area-main/events");
+        assertBlocked();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("render layer") && m.contains("jarea")
+                && m.contains("site 'siteA'") && m.contains("/sites/siteA/home/area-main/events"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"unknown.example", "localhost", ""})
+    @DisplayName("jarea naming another site's node is refused on an unmapped hostname too: Jahia would cache it under the page")
+    void prepare_jareaForeignNodeUnmappedHost_blocked(String host) throws Exception {
+        when(request.getServerName()).thenReturn(host);
+        pageWithArea("/sites/siteB/home", "/sites/siteA/home/area-main/events");
+        assertThatThrownBy(() -> filter.prepare(renderContext, resource, null)).isInstanceOf(PathNotFoundException.class);
+        // No site behind the hostname: the error page is the addressed page's site.
+        verify(request).setAttribute("siteKey", "siteB");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/sites", "/"})
+    @DisplayName("jarea naming the /sites node or the repository root, which list every site, is refused")
+    void prepare_jareaSitesRoot_blocked(String areaPath) throws Exception {
+        pageWithArea("/sites/siteB/home", areaPath);
+        assertBlocked();
+        assertThat(logged("info")).hasSize(1).allMatch(m -> m.contains("every site"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/sites/siteB/home/area-main", "/sites/siteB", "/sites/systemsite/contents/shared",
+            "/modules/dx-base-demo-templates/1.0/templates/base/area-main"})
+    @DisplayName("jarea naming a node of the page's own site, systemsite or a template passes")
+    void prepare_jareaOwnSystemOrTemplateNode_passes(String areaPath) throws Exception {
+        pageWithArea("/sites/siteB/home", areaPath);
+        assertPassed();
+        assertThat(logged("warn")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("jarea naming no readable node passes without a WARN: Jahia then fails to render it as well")
+    void prepare_jareaUnknownNode_passes() throws Exception {
+        pageWithArea("/sites/siteB/home", null);
+        assertPassed();
+        assertThat(logged("warn")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a failing jarea lookup lets the page through with one WARN")
+    void prepare_jareaLookupFails_failsOpen() throws Exception {
+        pageWithArea("/sites/siteB/home", "/sites/siteB/home/area-main");
+        when(node.getSession()).thenThrow(new RepositoryException("repo down"));
+        assertPassed();
+        assertThat(logged("warn")).hasSize(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", " "})
+    @DisplayName("a blank jarea is no area and costs no lookup")
+    void prepare_jareaBlank_passes(String value) throws Exception {
+        resolved("/sites/siteB/home", "siteB", "siteB");
+        when(request.getParameter("jarea")).thenReturn(value);
+        assertPassed();
+        verify(node, never()).getSession();
     }
 }

@@ -14,6 +14,7 @@ import org.osgi.service.component.annotations.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.jcr.ItemNotFoundException;
 import javax.jcr.PathNotFoundException;
 import javax.jcr.RepositoryException;
 import javax.servlet.RequestDispatcher;
@@ -36,6 +37,15 @@ import java.util.function.LongSupplier;
  * systemsite. The main resource being the {@code /sites} node or the repository root, whose resolve
  * site is systemsite but which list every site, is refused as well.
  *
+ * <p><b>{@code jarea}.</b> Jahia's {@code TemplateAjaxFilter} (priority 22.1, after the caching
+ * filters) renders the node a {@code jarea} UUID names inside the page, as a nested resource this
+ * filter would not otherwise see, and the cache key of the page ignores the parameter. A
+ * {@code jarea} naming a node of another site than the page's own (systemsite and nodes outside
+ * {@code /sites}, such as template areas, excepted), or the {@code /sites} node or the repository
+ * root, is therefore refused on every hostname, mapped or not: rendered once on an unmapped hostname,
+ * the foreign fragment would be cached under the page and served to the page's own visitors. The node
+ * is looked up exactly as {@code TemplateAjaxFilter} does it, with the page node's session.
+ *
  * <p>It does not replace the servlet layer: {@code /files} and {@code /repository} never enter the
  * render chain, actions ({@code *.do}, POST) run in {@code Render} before it, and search hits are
  * printed by the search results JSP rather than rendered as resources.
@@ -49,9 +59,10 @@ import java.util.function.LongSupplier;
  * <p>A block logs one sanitised INFO line, sets the {@code siteKey} request attribute to the
  * hostname's site and throws {@link PathNotFoundException}: {@code RenderChain} wraps it in a
  * {@code RenderFilterException}, which {@code DefaultErrorHandler} unwraps and answers with 404, and
- * {@code ErrorServlet} renders the hostname's site's error page. Like the servlet layer it stands
- * down on an unmapped, localhost or empty hostname, during error dispatches, and when a lookup fails
- * (with the rate-limited WARN of {@link FailureTracker}).
+ * {@code ErrorServlet} renders the hostname's site's error page (for a {@code jarea} refused on an
+ * unmapped hostname, the page's own site's). Like the servlet layer it stands down on an unmapped,
+ * localhost or empty hostname (the {@code jarea} check excepted), during error dispatches, and when a
+ * lookup fails (with the rate-limited WARN of {@link FailureTracker}).
  */
 @Component(service = RenderFilter.class, immediate = true)
 public class CrossSitesRenderFilter extends AbstractFilter {
@@ -64,9 +75,13 @@ public class CrossSitesRenderFilter extends AbstractFilter {
     /** The repository root and the {@code /sites} node: their resolve site is systemsite, yet they list every site. */
     private static final String REPOSITORY_ROOT = "/";
 
+    /** The UUID of a node {@code TemplateAjaxFilter} renders inside the page. */
+    static final String AREA_PARAMETER = "jarea";
+
     private final SiteDirectory directory;
     private final Logger logger;
     private final FailureTracker resolveSiteFailure;
+    private final FailureTracker areaLookupFailure;
 
     /** Required by OSGi DS: wires the real Jahia services. */
     public CrossSitesRenderFilter() {
@@ -77,6 +92,7 @@ public class CrossSitesRenderFilter extends AbstractFilter {
         this.directory = directory;
         this.logger = logger;
         this.resolveSiteFailure = new FailureTracker("the site of the main resource", logger, clockMillis);
+        this.areaLookupFailure = new FailureTracker("the node named by jarea", logger, clockMillis);
         setPriority(PRIORITY);
         setApplyOnModes("live");
         setApplyOnMainResource(true);
@@ -109,6 +125,22 @@ public class CrossSitesRenderFilter extends AbstractFilter {
             return null;
         }
         final SiteDirectory.HostSite hostSite = new SiteDirectory.HostSite(directory, request);
+        final JCRNodeWrapper node = resource.getNode();
+        final String areaTarget = foreignArea(request, node);
+        if (areaTarget != null) {
+            final String siteKeyFromHost = hostSite.siteKey();
+            final String errorSite = StringUtils.isEmpty(siteKeyFromHost) ? siteKeyOfPath(node.getPath()) : siteKeyFromHost;
+            if (logger.isInfoEnabled()) {
+                logger.info("Blocked cross-site access (render layer): {} selects {} on a page of site '{}', hostname '{}', main resource: {}, referer: {}",
+                        AREA_PARAMETER, LogValues.safe(areaTarget), LogValues.sanitise(StringUtils.defaultString(errorSite, "-")),
+                        LogValues.sanitise(hostSite.host()), LogValues.safe(node.getPath()),
+                        LogValues.describeReferer(request.getHeader("Referer")));
+            }
+            if (errorSite != null) {
+                request.setAttribute(SiteDirectory.SITE_KEY_ATTRIBUTE, errorSite);
+            }
+            throw new PathNotFoundException("Not found");
+        }
         final String siteKeyFromHost = hostSite.siteKey();
         if (StringUtils.isEmpty(siteKeyFromHost)) {
             return null;
@@ -117,7 +149,6 @@ public class CrossSitesRenderFilter extends AbstractFilter {
         if (siteNames.isEmpty()) {
             return null;
         }
-        final JCRNodeWrapper node = resource.getNode();
         final String target = foreignTarget(node, renderContext, SiteDirectory.toSet(siteNames), siteKeyFromHost);
         if (target == null) {
             return null;
@@ -147,6 +178,46 @@ public class CrossSitesRenderFilter extends AbstractFilter {
             return "render-context site '" + contextSiteKey + "'";
         }
         return null;
+    }
+
+    /**
+     * What a {@code jarea} parameter makes Jahia render beyond the page's own site and systemsite, or
+     * null. Independent of the hostname: see the class comment.
+     */
+    private String foreignArea(HttpServletRequest request, JCRNodeWrapper page) {
+        final String areaId = request.getParameter(AREA_PARAMETER);
+        if (StringUtils.isBlank(areaId) || page == null) {
+            return null;
+        }
+        final String areaPath;
+        try {
+            areaPath = page.getSession().getNodeByUUID(areaId).getPath();
+            areaLookupFailure.succeeded();
+        } catch (ItemNotFoundException e) {
+            // No node this session can read: TemplateAjaxFilter's identical lookup fails too.
+            areaLookupFailure.succeeded();
+            return null;
+        } catch (RepositoryException | RuntimeException e) {
+            areaLookupFailure.failed(FailureTracker.LOOKUP_FAILED, e);
+            return null;
+        }
+        if (REPOSITORY_ROOT.equals(areaPath) || JahiaSitesService.SITES_JCR_PATH.equals(areaPath)) {
+            return "every site (the node '" + areaPath + "')";
+        }
+        final String areaSite = siteKeyOfPath(areaPath);
+        if (areaSite == null || JahiaSitesService.SYSTEM_SITE_KEY.equals(areaSite)
+                || areaSite.equals(siteKeyOfPath(page.getPath()))) {
+            return null;
+        }
+        return "site '" + areaSite + "' (the node '" + areaPath + "')";
+    }
+
+    /** The site key of a canonical JCR path under {@code /sites/<key>}, or null. */
+    static String siteKeyOfPath(String path) {
+        if (path == null || !path.startsWith(SitePaths.SITES_PATH_PART)) {
+            return null;
+        }
+        return StringUtils.defaultIfEmpty(StringUtils.substringBefore(path.substring(SitePaths.SITES_PATH_PART.length()), "/"), null);
     }
 
     /** Null when the node has no site or it cannot be read; the render-context site is still checked then. */
