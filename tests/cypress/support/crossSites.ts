@@ -375,6 +375,21 @@ export const searchUrl = (onSite: string, selectedSites: string): string =>
     ].join('&');
 
 /**
+ * The term search of {@link searchUrl} on `onSite`, scoped by the raw parameter `scope` alone
+ * (for example `src_pagePath.value=/sites/x`), to compare the spellings Jahia applies as a scope.
+ */
+export const termSearchUrl = (onSite: string, scope: string): string =>
+    `/cms/render/live/en/sites/${onSite}/home/search-results.html?` +
+    [
+        'src_terms%5B0%5D.term=company',
+        'src_terms%5B0%5D.match=any_word',
+        'src_terms%5B0%5D.fields.siteContent=true',
+        'src_terms%5B0%5D.fields.files=true',
+        'src_languages.values=en',
+        scope
+    ].join('&');
+
+/**
  * A search on `onSite`'s search-results page that has no term, only a node-property criterion
  * (`src_properties(jnt:news).desc`), matching the news of the demo site {@link SITE_KEY}. Without
  * `selectedSites` it sets no site scope at all, which Jahia searches as the whole repository.
@@ -398,19 +413,47 @@ const siteUuidQuery = gql`
     }
 `;
 
-/** The JCR identifier of a site node, i.e. what the renderer's `jsite` parameter carries. */
-export const readSiteUuid = (siteKey: string): Cypress.Chainable<string> => {
+/** The JCR identifier of a live node, i.e. what the renderer's `jsite` and `jarea` parameters carry. */
+export const readNodeUuid = (path: string): Cypress.Chainable<string> => {
     cy.login();
     return cy
-        .apollo({query: siteUuidQuery, variables: {path: `/sites/${siteKey}`}})
+        .apollo({query: siteUuidQuery, variables: {path}})
         .then((result: JcrResult<{jcr?: {nodeByPath?: {uuid?: string}}}>) => {
             const uuid = result?.data?.jcr?.nodeByPath?.uuid;
             if (!uuid) {
-                throw new Error(`Cannot read the identifier of /sites/${siteKey}: ${JSON.stringify(result)}`);
+                throw new Error(`Cannot read the identifier of ${path}: ${JSON.stringify(result)}`);
             }
 
             return uuid;
         });
+};
+
+/** The JCR identifier of a site node, i.e. what the renderer's `jsite` parameter carries. */
+export const readSiteUuid = (siteKey: string): Cypress.Chainable<string> => readNodeUuid(`/sites/${siteKey}`);
+
+/**
+ * A live node of {@link SITE_KEY} that renders markup naming its site path when Jahia's
+ * TemplateAjaxFilter renders it for `jarea` (the events tab of the digitall 3.0.0 home page).
+ */
+export const FOREIGN_AREA_NODE_PATH = `${SITE_PATH}/home/area-main/area-2/area-2-side/event-tab-query`;
+
+/** `page`'s `.html.ajax` URL, with `jarea` set to `areaUuid` when given. */
+export const ajaxUrl = (pagePath: string, areaUuid?: string): string =>
+    `/cms/render/live/en${pagePath}.html.ajax${areaUuid ? `?jarea=${areaUuid}` : ''}`;
+
+/**
+ * Asserts a request is refused with Jahia's rendered 404 page and none of `markers`, without
+ * comparing to an unguarded host: for a selection the module refuses on every hostname, whose
+ * positive control is the same node rendered legitimately on its own site's page.
+ */
+export const expectRefused = (path: string, host: string, markers: string[]): void => {
+    assertUsableMarkers(markers);
+    const request = describeRequest(path, host);
+    rawGet(path, host).then(response => {
+        expect(response.status, `${request} -> expected 404 (refused)`).to.eq(HTTP_NOT_FOUND);
+        expectRenderedErrorPage(response, request);
+        expectNoForeignContent(response, request, markers);
+    });
 };
 
 /** `href` attributes of `page` that `reference` lacks, leaving out links to the unguarded host itself. */

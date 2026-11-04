@@ -1,25 +1,32 @@
 import {
+    ajaxUrl,
     ensureForeignSite,
     expectBlocked,
     expectFileBlocked,
     expectFileServed,
+    expectRefused,
     expectSelectionBlocked,
     expectServedUnguardedThenBlocked,
     expectStatus,
     expectWithheldWhereServed,
+    FOREIGN_AREA_NODE_PATH,
     FOREIGN_SERVER_NAME,
     FOREIGN_SITE_KEY,
     FOREIGN_SITE_PATH,
     foreignFileUrlWithKey,
     foreignRenderUrl,
     nodePropertySearchUrl,
+    readNodeUuid,
     readSiteServerName,
     readSiteUuid,
     searchUrl,
     setSiteServerName,
     sharedFileUrl,
     SITE_KEY,
+    SITE_PATH,
     SITE_SERVER_NAME,
+    termSearchUrl,
+    UNMAPPED_SERVER_NAME,
     waitForMappingToApply
 } from '../support/crossSites';
 
@@ -31,7 +38,8 @@ import {
  *   - content disclosure by parameter: a path naming the visitor's own site passed the path check
  *     while a request parameter selected another site: the search module's `src_sites.values`
  *     (search results, excerpts and file text of the other site) and the renderer's `jsite`
- *     (the other site's navigation rendered in the visitor's page).
+ *     (the other site's navigation rendered in the visitor's page), and the ajax `jarea` UUID (any
+ *     node of the other site rendered inside the visitor's page, then cached under that page).
  *   - metadata disclosure: the /sites node itself (`/sites.html.ajax`) addresses no site key, so it
  *     passed, and lists every site's title, server name and top-level nodes.
  *   - availability: `systemsite` holds Jahia's cross-site shared content; treating it as "a
@@ -140,9 +148,56 @@ describe('CrossSitesFilter - former bypasses and false positives', () => {
         expectStatus(nodePropertySearchUrl(FOREIGN_SITE_KEY, FOREIGN_SITE_KEY), FOREIGN_SERVER_NAME, 200);
     });
 
+    // Spellings that name a scope property but that Jahia does not apply as the scope: before the fix
+    // the module counted them as one, and the search ran over every site.
+    [
+        `src_sites.zz=${FOREIGN_SITE_KEY}`,
+        `src_sites(x)=${FOREIGN_SITE_KEY}`,
+        `src_sites.Values=${FOREIGN_SITE_KEY}`,
+        `src_pagePath.values=${FOREIGN_SITE_PATH}`,
+        `src_filePath.values=${FOREIGN_SITE_PATH}`
+    ].forEach(scope => {
+        it(`blocks a search whose only scope, ${scope.split('=')[0]}, is a spelling Jahia ignores`, () => {
+            expectSelectionBlocked(termSearchUrl(FOREIGN_SITE_KEY, scope), ownSearchUrl, FOREIGN_SERVER_NAME);
+        });
+    });
+
+    it('still serves a search scoped to the own site by a spelling Jahia applies', () => {
+        [
+            `src_sites=${FOREIGN_SITE_KEY}`,
+            `src_sites.value=${FOREIGN_SITE_KEY}`,
+            `src_pagePath.value=${FOREIGN_SITE_PATH}`
+        ].forEach(scope => {
+            expectStatus(termSearchUrl(FOREIGN_SITE_KEY, scope), FOREIGN_SERVER_NAME, 200);
+        });
+    });
+
     it("blocks the own site's page rendered with another site's jsite", () => {
         readSiteUuid(SITE_KEY).then(uuid => {
             expectSelectionBlocked(`${foreignRenderUrl}?jsite=${uuid}`, foreignRenderUrl, FOREIGN_SERVER_NAME);
+        });
+    });
+
+    it("blocks the own page's ajax render of another site's node through jarea, on every hostname", () => {
+        readNodeUuid(FOREIGN_AREA_NODE_PATH).then(uuid => {
+            // Positive control: the node renders markup naming its site on its own site's page.
+            expectStatus(ajaxUrl(`${SITE_PATH}/home`, uuid), UNMAPPED_SERVER_NAME, 200).then(control => {
+                expect(control.body, 'the jarea node renders no markup naming its site').to.include(`${SITE_PATH}/`);
+            });
+            expectRefused(ajaxUrl(`${FOREIGN_SITE_PATH}/home`, uuid), FOREIGN_SERVER_NAME, [`${SITE_PATH}/`]);
+            // Refused on an unmapped hostname too: rendered there, the fragment was cached under the page.
+            expectRefused(ajaxUrl(`${FOREIGN_SITE_PATH}/home`, uuid), UNMAPPED_SERVER_NAME, [`${SITE_PATH}/`]);
+            expectStatus(ajaxUrl(`${FOREIGN_SITE_PATH}/home`), FOREIGN_SERVER_NAME, 200).then(page => {
+                expect(page.body, "the own page's ajax render carries the other site's node").to.not.include(
+                    `${SITE_PATH}/`
+                );
+            });
+        });
+    });
+
+    it("still serves the own page's ajax render of its own node through jarea", () => {
+        readNodeUuid(`${FOREIGN_SITE_PATH}/home`).then(uuid => {
+            expectStatus(ajaxUrl(`${FOREIGN_SITE_PATH}/home`, uuid), FOREIGN_SERVER_NAME, 200);
         });
     });
 
