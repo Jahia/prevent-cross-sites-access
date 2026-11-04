@@ -4,18 +4,44 @@
     <parent>
         <artifactId>jahia-modules</artifactId>
         <groupId>org.jahia.modules</groupId>
-        <version>8.1.0.0</version>
+        <version>8.2.3.2</version>
     </parent>
     <groupId>org.jahia.community.modules</groupId>
     <artifactId>prevent-cross-sites-access</artifactId>
     <name>Prevent Cross Sites Access</name>
-    <version>1.0.1-SNAPSHOT</version>
+    <version>2.0.0-SNAPSHOT</version>
     <packaging>bundle</packaging>
-    <description>This is the custom module (prevent-cross-sites-access) for running on a Jahia server.</description>
+    <description>Jahia servlet filter that answers 404 when a request addresses the live content of one site over a hostname mapped to another site.</description>
+
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
     <properties>
         <jahia.plugin.version>6.9</jahia.plugin.version>
         <jahia-module-type>system</jahia-module-type>
+        <junit.version>5.14.4</junit.version>
+        <mockito.version>5.23.0</mockito.version>
+        <assertj.version>3.27.7</assertj.version>
+        <!--
+            Keeps the builder's local checkout path out of the released manifest. jahia-modules passes this
+            property to bnd's -removeheaders; the list is jahia-parent 8.2.3.2's default plus
+            Jahia-Source-Folders, which is what that parent's own no-source-folders release profile removes.
+            Jahia reads the header only to mount a module's sources in development mode
+            (JahiaBundleTemplatesPackageHandler, BundleSourceResourceResolver) and skips it when absent.
+        -->
+        <jahia.modules.bundle.removeheaders>
+            Include-Resource,
+            Private-Package,
+            Embed-Dependency,
+            Embed-Transitive,
+            Jahia-Depends-Skip-Require-Capability,
+            Jahia-Source-Folders
+        </jahia.modules.bundle.removeheaders>
     </properties>
 
     <scm>
@@ -50,8 +76,53 @@
         </snapshotRepository>
     </distributionManagement>
 
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Test only: Jahia's render classes (Resource, RenderContext) need Guava to be mocked; Jahia 8.2.3.2 ships 33.0.0-jre. -->
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>33.0.0-jre</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
     <build>
         <plugins>
+            <plugin>
+                <!-- No parent manages Surefire, so without a version Maven picks whatever it resolves
+                     (and warns that future builds may break). Pinned for a reproducible build.
+                     failIfNoTests: a build that discovers no test must fail, not pass. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.6.0</version>
+                <configuration>
+                    <failIfNoTests>true</failIfNoTests>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.felix</groupId>
                 <artifactId>maven-bundle-plugin</artifactId>
